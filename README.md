@@ -1,6 +1,6 @@
 # DirectivityTurntable
 
-Mesa giratoria automatizada para medir el **patrón de directividad (diagramas polares)** de parlantes y fuentes sonoras. Un Arduino gira el plato a ángulos precisos y un cliente en Python coordina el giro con la medición.
+Mesa giratoria automatizada para medir el **patrón de directividad (diagramas polares)** de parlantes y fuentes sonoras. Un Arduino gira el plato a ángulos precisos y el paquete de Python `directivity` coordina el giro con la medición: reproduce un barrido senoidal, obtiene la respuesta al impulso en cada ángulo y calcula el patrón polar por banda de octava.
 
 ## Hardware
 
@@ -19,10 +19,16 @@ Mesa giratoria automatizada para medir el **patrón de directividad (diagramas p
 ```
 DirectivityTurntable/
 ├── firmware/DirectivityTurntable/DirectivityTurntable.ino   # firmware del Arduino
-└── python/
-    ├── turntable.py                                         # cliente serial + barrido de prueba
-    └── requirements.txt
+├── src/directivity/
+│   ├── domain/        # ángulos, señales, ventanas, pipeline y patrón polar (sin I/O)
+│   ├── application/   # caso de uso MeasureDirectivity
+│   ├── ports.py       # contratos: Turntable, AudioIO, ResultStore
+│   └── adapters/      # mesa serial y simulada, audio simulado, CSV y CLI
+├── tests/             # unitarios, de contrato, de integración y de arquitectura
+└── docs/MIGRATION_PLAN.md
 ```
+
+La arquitectura es hexagonal liviana. El dominio no sabe nada del puerto serial ni del audio, y el caso de uso solo conoce los puertos (`typing.Protocol`). Los adaptadores reales y los simulados cumplen el mismo contrato, verificado por los mismos tests. El detalle y el registro de la migración están en [docs/MIGRATION_PLAN.md](docs/MIGRATION_PLAN.md).
 
 ## Firmware
 
@@ -39,13 +45,13 @@ Usa un protocolo de texto: una orden por línea a 115200 baudios.
 
 Si una orden falla, la respuesta empieza con `ERR`. El límite de ±360° evita que el cable del parlante se enrolle.
 
-**Resolución:** con 2048 pasos por vuelta, cada paso equivale a unos 0,18°. Por eso `GOTO 5` puede devolver `OK 4.92`. Registra en tu medición el ángulo real que devuelve la mesa, no el ángulo que pediste.
+**Resolución:** con 2048 pasos por vuelta, cada paso equivale a unos 0,18°. Por eso `GOTO 5` puede devolver `OK 4.92`. El software registra siempre el ángulo real que devuelve la mesa, no el que se pidió.
 
 ### Posición absoluta
 
 Un giro de 5° equivale a 28,44 pasos, que no es un número entero. Si cada giro se redondeara por separado, el error se acumularía: en una vuelta completa de 72 giros de 5° se perderían unos 5,6°.
 
-Para evitarlo, el firmware lleva la posición absoluta en pasos y redondea cada destino contra el ángulo absoluto, así que el error nunca supera medio paso. En una simulación de escritorio, 72 giros de 5° suman exactamente 2048 pasos (360,00°). Falta probarlo en la placa.
+Para evitarlo, el firmware lleva la posición absoluta en pasos y redondea cada destino contra el ángulo absoluto, así que el error nunca supera medio paso. El emulador del firmware que usan los tests confirma que 72 giros de 5° suman exactamente 2048 pasos (360,00°). Usa aritmética `float32`, igual que el AVR. Falta probarlo en la placa (ver [Tests con la placa](#tests-con-la-placa)).
 
 ### Calibración
 
@@ -61,20 +67,62 @@ El firmware usa 2048 pasos por vuelta como valor nominal (`STEPS_PER_REV`). Para
 2. Selecciona **Arduino Leonardo** y el puerto correcto.
 3. Sube el sketch. La librería `Stepper` viene incluida con el IDE.
 
-## Cliente en Python
+La CI también compila el sketch para Leonardo en cada push.
+
+## Instalación
+
+Requiere Python 3.11 o superior. En macOS el `python3` del sistema es 3.9, así que crea un entorno virtual con uno más nuevo (por ejemplo `brew install python@3.13`):
 
 ```bash
-cd python
-pip install -r requirements.txt
-python turntable.py --port /dev/tty.usbmodemXXXX --step 5      # barrido de prueba de 0° a 360°
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-Como librería:
+## Uso
+
+### Barrido de prueba de la mesa
+
+Recorre los ángulos sin medir audio y muestra el ángulo pedido junto al real. Al final la mesa vuelve a 0° y apaga las bobinas.
+
+```bash
+directivity sweep --simulate --step 5                    # sin placa
+directivity sweep --port /dev/tty.usbmodemXXXX --step 5  # con la placa
+```
+
+En macOS el puerto aparece como `/dev/tty.usbmodem...`. Puedes listarlo con `ls /dev/tty.usbmodem*`.
+
+### Medición de directividad
+
+Antes de empezar, la fuente debe apuntar al micrófono: esa posición se toma como 0°. En cada ángulo se reproduce un barrido senoidal exponencial. La grabación se deconvoluciona para obtener la respuesta al impulso, que pasa por una compuerta temporal para quedarse con el sonido directo y descartar las reflexiones. Por último se calcula el nivel por banda de octava.
+
+```bash
+directivity measure --simulate --source cardioid --step 10 --out data/raw
+```
+
+Por ahora la medición solo funciona en simulación: falta el adaptador de audio real, y con `--port` el comando termina con un error que lo explica. La fuente simulada puede ser `omni` o `cardioid`; está a ~1 m del micrófono, con una reflexión de piso y ruido de fondo. Cada sesión se guarda en `data/raw/<fecha>T<hora>/`:
+
+| Archivo | Contenido |
+|---|---|
+| `measurements.csv` | Una fila por ángulo: ángulo pedido, ángulo real, frecuencia de muestreo, archivo de la IR y nivel por banda. Se escribe apenas se mide cada punto. |
+| `ir_000.npy`, … | Respuesta al impulso procesada de cada ángulo (`float32`) |
+| `pattern.csv` | Niveles relativos al eje (dB): una fila por banda y una columna por ángulo real |
+
+Opciones útiles:
+- `--start`, `--stop` y `--step` definen el barrido angular.
+- `--sweep-duration` fija la duración del barrido senoidal.
+- `--gate-start` y `--gate-length` definen la compuerta. La frecuencia mínima confiable es ≈ 1/duración: 100 Hz con la compuerta de 10 ms por defecto.
+
+`directivity measure --help` las lista todas.
+
+### Como librería
+
+La mesa real, con `SerialTurntable.open(...)` como reemplazo del antiguo `Turntable(...)`:
 
 ```python
-from turntable import Turntable
+from directivity.adapters.serial_turntable import SerialTurntable
 
-with Turntable("/dev/tty.usbmodemXXXX") as table:
+with SerialTurntable.open("/dev/tty.usbmodemXXXX") as table:
     table.home()
     for angle in range(0, 361, 5):
         real = table.goto(angle)
@@ -83,20 +131,44 @@ with Turntable("/dev/tty.usbmodemXXXX") as table:
     table.release()
 ```
 
-En macOS el puerto aparece como `/dev/tty.usbmodem...`. Puedes listarlo con `ls /dev/tty.usbmodem*`.
+Una medición completa en simulación, armando el caso de uso a mano:
+
+```python
+from pathlib import Path
+
+from directivity.adapters.csv_store import CsvResultStore
+from directivity.adapters.simulated_audio import SimulatedAudio, cardioid
+from directivity.adapters.simulated_turntable import SimulatedTurntable
+from directivity.application.measure_directivity import MeasureDirectivity
+from directivity.domain.angles import SweepPlan
+from directivity.domain.pipeline import default_pipeline
+from directivity.domain.signals import LogSweep
+
+table = SimulatedTurntable()
+audio = SimulatedAudio(angle_provider=table.position, directivity=cardioid)
+sweep = LogSweep(duration_s=1.0)
+measure = MeasureDirectivity(
+    turntable=table,
+    audio=audio,
+    store=CsvResultStore(Path("data/raw/ejemplo")),  # la carpeta no debe tener otra sesión
+    excitation=sweep,
+    pipeline=default_pipeline(sweep, gate_length_s=0.010),
+    settle_s=0.0,
+)
+pattern = measure.execute(SweepPlan(0, 180, 30))
+for angle, level in zip(pattern.angles(), pattern.normalized(1000.0)):
+    print(f"{angle:7.2f}°  {level:6.2f} dB")
+```
 
 ## Desarrollo
 
-El código está migrando a `src/directivity/` (ver [docs/MIGRATION_PLAN.md](docs/MIGRATION_PLAN.md)). Requiere Python 3.11 o superior. En macOS el `python3` del sistema es 3.9, así que crea un entorno virtual con uno más nuevo (por ejemplo `brew install python@3.13`):
-
 ```bash
-python3.13 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
 ruff check . && ruff format --check . && mypy && pytest
 ```
 
-Barrido de prueba sin placa: `directivity sweep --simulate --step 5`. Con la placa: `directivity sweep --port /dev/tty.usbmodemXXXX --step 5`.
+- `ruff` revisa el estilo y exige docstrings en estilo Google.
+- `mypy` corre en modo estricto, así que todo el código tiene type hints.
+- La CI de GitHub Actions corre lo mismo con Python 3.11, 3.12 y 3.13, y además compila el firmware.
 
 ### Tests con la placa
 
@@ -114,9 +186,10 @@ El plato gira hasta ±360° y siempre termina en 0° con las bobinas apagadas. T
 
 ## Próximos pasos
 
-- [ ] Probar el firmware en la placa y calibrar `STEPS_PER_REV`.
-- [ ] Automatizar la medición en cada ángulo: barrido senoidal, grabación y respuesta al impulso.
-- [ ] Generar diagramas polares por banda de octava, mapa de directividad e índice de directividad (DI).
+- [ ] Probar el firmware en la placa (`pytest -m hardware`) y calibrar `STEPS_PER_REV`.
+- [x] Automatizar la medición en cada ángulo: barrido senoidal, respuesta al impulso, compuerta y niveles por banda de octava (en simulación).
+- [ ] Adaptador de audio real (p. ej. `sounddevice`) para medir con la placa; el contrato de `AudioIO` ya está escrito.
+- [ ] Graficar diagramas polares y mapa de directividad, y calcular el índice de directividad (DI).
 - [ ] Validar con una fuente de directividad conocida.
 
 ## Autor

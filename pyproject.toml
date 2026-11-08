@@ -34,8 +34,8 @@ packages = ["src/directivity"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-# python/ es el cliente heredado (se elimina en la Fase 6); docs/ es solo Markdown.
-extend-exclude = ["python", "docs"]
+# docs/ es solo Markdown (ruff intentaría formatear sus bloques de código).
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "D", "SIM", "RUF"]

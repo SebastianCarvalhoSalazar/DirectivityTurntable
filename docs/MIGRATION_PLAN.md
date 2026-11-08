@@ -1,5 +1,7 @@
 # Plan de migración a arquitectura hexagonal liviana — DirectivityTurntable
 
+> **Estado: completado (2026-11-08).** Las fases 0 a 6 están implementadas y validadas; el detalle de cada una está en la sección 12, *Registro de implementación*. Queda una verificación manual pendiente: correr el contrato de la mesa contra la placa (`pytest -m hardware --port …`).
+
 ## 1. Contexto
 
 Hoy el proyecto tiene dos piezas: el firmware (`firmware/DirectivityTurntable/DirectivityTurntable.ino`) y un cliente serial de un solo archivo (`python/turntable.py`, ~100 líneas) que mezcla protocolo, transporte y un barrido de prueba por CLI. El siguiente paso del README es automatizar la medición acústica: barrido senoidal, grabación, respuesta al impulso, diagramas polares por banda de octava. Si ese código crece sobre el script actual, el procesamiento de señales queda atado al puerto serial y no se puede probar sin la placa.
@@ -255,7 +257,7 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
   - Se actualiza `README.md`: instalación con `pip install -e .`, comandos `directivity sweep` y `directivity measure`, nueva estructura y cómo correr los tests de hardware.
   - Se marca este plan como completado.
 - **Criterios de aceptación:**
-  - `grep -r "python/turntable" .` no devuelve nada.
+  - `grep -r "python/turntable" . --exclude-dir=.git --exclude-dir=.venv --exclude=MIGRATION_PLAN.md` no devuelve nada. *(Corregido en la Fase 6: este plan y su registro mencionan el archivo como historia, y el historial de git y el venv no cuentan.)*
   - Los ejemplos del README se ejecutan tal cual en modo `--simulate`.
   - La CI está en verde.
 - **Riesgo:** perder el uso "como librería" del README. Se mitiga documentando `SerialTurntable.open(...)` como reemplazo directo.
@@ -293,7 +295,7 @@ Los tests de contrato son la verificación concreta de **LSP**: cualquier adapta
 ## 10. Verificación de punta a punta (al terminar la Fase 5)
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate
+python3.13 -m venv .venv   # cualquier Python ≥ 3.11 (corregido en la Fase 6: decía 3.12) && source .venv/bin/activate
 pip install -e ".[dev]"
 ruff check . && ruff format --check . && mypy && pytest --cov=directivity
 directivity sweep --simulate --step 5                      # 73 líneas, termina en 360.00°
@@ -525,4 +527,49 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **La excitación se pasa dos veces**: al caso de uso (para `generate`) y a `Deconvolve`. Las arma la CLI con el mismo objeto y el docstring lo advierte. Se descartó que el caso de uso construya el pipeline, porque dejaría de ser inyectable.
 - **`--settle` por defecto** vale 0 en simulación y 0.5 s con la placa. Con la placa, `measure` todavía termina en error hasta que exista un adaptador de audio real (sección 11).
 - **Funciones extra** que no estaban en el plan: `session_name()` y `format_db()`, para poder probar choques de sesión y por la presentación.
+
+### Fase 6: Retiro del código heredado y documentación (2026-11-08)
+
+**Qué se hizo**
+- Se eliminaron `python/turntable.py` y `python/requirements.txt` (con `git rm`). `python/` también se quitó del `extend-exclude` de ruff.
+- `README.md` reescrito:
+  - Estructura nueva y resumen de la arquitectura.
+  - Instalación con `pip install -e ".[dev]"`.
+  - `directivity sweep` y `directivity measure`, con la tabla de archivos de la sesión y las opciones útiles.
+  - Uso como librería: `SerialTurntable.open(...)` como reemplazo directo del antiguo `Turntable(...)` y una medición simulada armada a mano con `MeasureDirectivity`.
+  - Desarrollo y tests con la placa, con la tabla de ejecuciones.
+  - Próximos pasos actualizados. Se marcó como hecha la automatización en simulación y se agregó el adaptador de audio real.
+  - En la sección del firmware, la afirmación "72 × 5° = 2048 pasos" ahora cita el emulador `float32`.
+- Plan: estado "completado" al inicio, criterio del `grep` corregido y sección 10 corregida (`python3.12` → `python3.13`, cualquier versión ≥ 3.11).
+
+**Validación**
+- `grep -rn "python/turntable" . --exclude-dir=.git --exclude-dir=.venv --exclude=MIGRATION_PLAN.md` no devuelve coincidencias (rc=1).
+- Ejemplos del README: un script del scratchpad extrae los bloques de código y los ejecuta tal cual en una carpeta temporal.
+  - `directivity sweep --simulate --step 5`: rc=0.
+  - `directivity measure --simulate --source cardioid --step 10 --out data/raw`: rc=0, con la sesión creada.
+  - Medición simulada en Python: rc=0, con la sesión `data/raw/ejemplo` creada.
+  - Ejemplo con la placa: rc=0, ejecutado contra el emulador del firmware sustituyendo solo `SerialTurntable.open`.
+- `ruff check`, `ruff format --check` (42 archivos, incluido el README) y `mypy --strict` (41 archivos) pasan sin errores. `pytest`: 269 tests pasan y 16 de hardware quedan excluidos. Cobertura total del 99 %.
+- CI: ver el run del commit de esta fase.
+
+**Desviaciones y decisiones**
+- **El criterio del `grep` estaba mal planteado.** Tal como estaba escrito, era imposible de cumplir sin borrar la historia del propio plan. Se corrigió para excluir `MIGRATION_PLAN.md`, `.git/` y `.venv/`.
+- **El ejemplo con la placa no se puede ejecutar en la Mac sin hardware.** Se validó contra el emulador, el mismo que usan los tests de contrato.
+
+## 13. Resumen de la migración
+
+| Fase | Resultado | Tests (acumulados) |
+|---|---|---|
+| 0 | Empaquetado, herramientas, test de arquitectura y CI (Python 3.11–3.13 + firmware) | 9 |
+| 1 | Puerto `Turntable`, `SerialTurntable`, `SimulatedTurntable`, emulador del firmware y contrato | 115 |
+| 2 | `Signal`, `LogSweep` (Strategy) y `RectangularWindow`/`TukeyWindow` (Strategy) | 185 |
+| 3 | `Pipeline`, `Deconvolve`, `Gate`, niveles por octava y `PolarPattern` | 217 |
+| 4 | `AudioIO`, `ResultStore`, `SimulatedAudio` y `CsvResultStore` | 251 |
+| 5 | `MeasureDirectivity` y `directivity measure` | 269 |
+| 6 | Retiro del cliente heredado y README | 269 |
+
+**Pendiente fuera del alcance:**
+- Correr `pytest -m hardware --port …` con la placa y anotarlo en el README.
+- Adaptador de audio real.
+- Gráficos polares y DI (sección 11).
 
