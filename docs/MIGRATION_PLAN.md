@@ -210,6 +210,7 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
   - Un `PolarPattern` con ganancias de cardioide da −6.02 dB a 90° (±0.05 dB). La normalización usa el **ángulo real**, no el pedido.
 - **Riesgos:**
   - **Compuerta inconsistente entre ángulos.** Se mitiga fijando el inicio de `Gate` con un retardo común (distancia constante), no con el pico de cada IR.
+  - **El borde suavizado de la ventana atenúa el sonido directo.** Si la compuerta abre a menos de `alpha·(length−1)/2` muestras del directo, este cae en el borde de subida. `Gate` debe abrir con un margen previo mayor que ese borde. *(Agregado tras la Fase 2.)*
   - **Bandas bajas con poca resolución** por una compuerta corta. Se documenta el límite de baja frecuencia ≈ 1/longitud_de_compuerta.
 
 ### Fase 4: Puertos `AudioIO` y `ResultStore` con sus adaptadores
@@ -379,4 +380,39 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **El punto 6 del contrato es el teardown del fixture `table`**, no un test: `goto(0)`, `release()` y `close()`.
 - **Doble de pruebas guionado.** Se usa `ScriptedTransport` porque el emulador solo produce respuestas válidas. La sección 5 lo permite: no existe un adaptador simulado capaz de generar respuestas malformadas.
 - **Criterio del barrido aclarado en el plan:** son 73 líneas de puntos más un mensaje final.
+
+### Fase 2: Señales — Strategy de excitación y de ventana (2026-11-08)
+
+**Qué se hizo**
+- `domain/signals.py`:
+  - `Signal`: dataclass inmutable con `eq=False`. Copia las muestras a `float64`, las deja de solo lectura y valida que sean 1-D y que `sample_rate` sea mayor que 0. Expone `len`, `duration_s` y `with_samples()`.
+  - `ExcitationSignal`: Protocol (Strategy).
+  - `linear_convolve`: convolución lineal por FFT, con relleno a potencia de 2 y sin solapamiento circular.
+  - `LogSweep`: barrido exponencial de Farina con fundidos de medio Hann y validación de parámetros y de Nyquist. Su `inverse_filter` es el barrido invertido con envolvente `e^(−t/L)` (+6 dB/octava), normalizado para que `deconvolve(generate())` dé pico 1. En `deconvolve` se descarta el tiempo negativo y la salida tiene la misma longitud que la grabación.
+- `domain/windows.py`:
+  - `Window`: Protocol (Strategy).
+  - `RectangularWindow` y `TukeyWindow(alpha)`, con la misma definición que `scipy.signal.windows.tukey` pero en numpy.
+  - Función común `_gate`: conserva la longitud, anula lo que queda fuera de la compuerta y rechaza compuertas que no caben en la señal.
+- Tests:
+  - `tests/domain/test_signals.py`, que incluye la clase de propiedades `TestExcitationStrategyProperties`, corrida con `LogSweep` y con `DiracExcitation`, esta última definida solo en el test.
+  - `tests/domain/test_windows.py`, que incluye `TestWindowStrategyProperties`, corrida con cuatro ventanas.
+
+**Validación**
+- `ruff check`, `ruff format --check` y `mypy --strict` (28 archivos) pasan sin errores.
+- `pytest`: 185 tests pasan y 16 de hardware quedan excluidos. Cobertura del 98 %; `signals.py` y `windows.py` al 100 %.
+- **Criterios de aceptación:**
+  - Retardo y ganancia `(N, g)` ∈ {(0, 1), (480, 0.5), (1234, −0.1), (7, 2)}: el pico se recupera en N exacto (dentro de ±1), con g a ±0.1 dB y con el signo correcto. También con ruido a −40 dB.
+  - `TukeyWindow(0)` es idéntica a la rectangular, y `TukeyWindow(1)` coincide con `np.hanning` (tolerancia 1e-12) para N ∈ {2, 11, 400, 401}.
+  - Todas las ventanas conservan la longitud y el `sample_rate`.
+  - OCP: `git status` muestra solo archivos nuevos (`signals.py`, `windows.py` y sus tests); ningún módulo existente cambió. Una excitación nueva (`DiracExcitation`) se definió en el test y pasa las mismas propiedades que `LogSweep`.
+
+**Hallazgos**
+- **Distorsión armónica.** Con un segundo armónico fuerte (`x + 0.2·x²`), la parte causal de la IR queda por debajo de −40 dB a partir de los 5 ms. La deconvolución de Farina efectivamente empuja la distorsión a tiempo negativo.
+- **El borde de la Tukey simétrica atenúa el directo.** Una compuerta de 600 muestras con `alpha=0.25` que abre 50 muestras antes del directo lo deja en 0.75 (−2.5 dB). Hay un test que lo documenta y se agregó el riesgo a la Fase 3: `Gate` debe abrir con un margen mayor que el borde.
+- **Instante cero de la IR.** El barrido invertido desplaza el instante 0 a la muestra `len(barrido) − 1` de la convolución completa. Lo verifica `test_self_deconvolution_is_unit_impulse_at_zero`.
+
+**Desviaciones y decisiones**
+- **Normalización por pico.** Se eligió que el inverso dé pico 1 contra el propio barrido, en vez de ganancia unitaria en la banda pasante. Así una IR `g·δ[n−N]` se recupera con pico `g` exacto, que es lo que pide el criterio. Para el patrón polar la constante da igual, porque se normaliza contra 0°.
+- **Más tests que los pedidos:** separación de directo y reflexión, robustez al ruido, frecuencia instantánea y distorsión.
+- **Ventana asimétrica descartada.** Se mantuvo la Tukey simétrica del plan en vez de agregar una "media ventana" (plana al inicio). Con un margen previo adecuado, la simétrica basta, y una ventana más sería una abstracción sin necesidad demostrada.
 
