@@ -489,3 +489,40 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **`pattern.csv` usa `csv.reader`**, no `DictReader`, porque dos ángulos iguales repetirían el nombre de columna.
 - **Caracteres Unicode en docstrings.** Ruff (`RUF002`) rechaza `−` y `∗` porque se confunden con `-` y `*`. En el código se usa ASCII; en este documento no hay problema.
 
+### Fase 5: Caso de uso `MeasureDirectivity` y CLI `measure` (2026-11-08)
+
+**Qué se hizo**
+- `application/measure_directivity.py`: `MeasureDirectivity`, una dataclass con `turntable`, `audio`, `store`, `excitation`, `pipeline: Stage`, `bands`, `settle_s` y `sleep`.
+  - `execute(plan, on_point)` genera la excitación una sola vez, hace `home()` y en cada ángulo ejecuta `goto`, `sleep(settle_s)`, `play_and_record`, `pipeline`, crea el `MeasurementPoint` y llama a `store.append` y a `on_point`. Al final arma el `PolarPattern` y llama a `save_pattern`.
+  - En el `finally`, `_park()` hace `goto(0)` y luego `release()`, este último aunque el regreso falle.
+- `adapters/cli.py`:
+  - Subcomando `measure (--port | --simulate)` con `--source omni|cardioid`, `--start`, `--stop`, `--step` (por defecto 10°), `--out` (por defecto `data/raw`), `--sample-rate`, `--sweep-duration`, `--gate-start`, `--gate-length` y `--settle`.
+  - Arma `LogSweep`, `default_pipeline`, `SimulatedTurntable`, `SimulatedAudio` y `CsvResultStore` con `ExitStack` y `closing`.
+  - Geometría simulada: directo a 3 ms (≈1 m), reflexión de piso a 12 ms (ganancia 0.4) y ruido a −80 dB.
+  - Durante la medición muestra el avance con L(1 kHz) y al final imprime la tabla del patrón a 1 kHz.
+  - `--port` termina con un error claro: falta el adaptador de audio real.
+  - Los errores (`TurntableError`, `ValueError`, `FileExistsError`) salen con código 1 y Ctrl-C con código 130.
+  - Despacho por `set_defaults(handler=...)`; `sweep` pasó a `_cmd_sweep`.
+  - Funciones auxiliares: `bands_for(fs)` (bandas bajo Nyquist), `session_name()` (fecha y hora, sustituible en tests) y `format_db()` (sin `-0.00`).
+- Tests: `tests/application/test_measure_directivity.py` (integración totalmente simulada y fallas) y la clase `TestMeasure` en `tests/adapters/test_cli.py`.
+
+**Validación**
+- `ruff check`, `ruff format --check` y `mypy --strict` (41 archivos) pasan sin errores.
+- `pytest`: 269 tests pasan y 16 de hardware quedan excluidos, en 1.05 s.
+- **Criterios de aceptación:**
+  - Integración totalmente simulada (`SimulatedTurntable`, `SimulatedAudio` cardioide a 16 kHz con reflexión y ruido, y `CsvResultStore`): el patrón a 1 kHz coincide con la cardioide teórica, evaluada en el ángulo real, con un error máximo de **0.0058 dB** entre 0° y 150° (tolerancia ±0.5 dB).
+  - Si `AudioIO` lanza un error en el tercer punto (se probó con `RuntimeError` y con `KeyboardInterrupt`), la mesa termina en 0° y con las bobinas apagadas, `measurements.csv` tiene **2 filas** y no se escribe `pattern.csv`.
+  - `directivity measure --simulate --source cardioid --step 10 --out <dir>` crea la sesión con 37 archivos `ir_NNN.npy`, `measurements.csv` y `pattern.csv`. A 90° muestra −6.02 dB.
+  - Cobertura de `domain/` y `application/` al **100 %** (el umbral era ≥ 90 %). Cobertura total del 99 %.
+- También se verificó que la compuerta elimina la reflexión de sala (nada después de los 10 ms), que el regreso a 0° fallido igual apaga las bobinas y que `sleep(settle_s)` se llama una vez por punto.
+
+**Hallazgos**
+- **Ruido y formato.** Con ruido, la normalización produce valores como −0.001 dB, que se imprimían como `-0.00`. Se agregó `format_db`.
+- **La sesión puede chocar.** Dos mediciones en el mismo segundo comparten nombre de sesión. `CsvResultStore` lo detecta (`FileExistsError`) y la CLI lo informa sin sobrescribir.
+
+**Desviaciones y decisiones**
+- **El caso de uso recibe el pipeline como `Stage`**, no como `Pipeline`, para depender de la abstracción (DIP). `Pipeline` la cumple.
+- **La excitación se pasa dos veces**: al caso de uso (para `generate`) y a `Deconvolve`. Las arma la CLI con el mismo objeto y el docstring lo advierte. Se descartó que el caso de uso construya el pipeline, porque dejaría de ser inyectable.
+- **`--settle` por defecto** vale 0 en simulación y 0.5 s con la placa. Con la placa, `measure` todavía termina en error hasta que exista un adaptador de audio real (sección 11).
+- **Funciones extra** que no estaban en el plan: `session_name()` y `format_db()`, para poder probar choques de sesión y por la presentación.
+
