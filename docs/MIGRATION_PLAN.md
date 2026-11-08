@@ -219,7 +219,7 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
 - **`SimulatedAudio(sample_rate, directivity: Callable[[float], float], delay_s, noise_db, angle_provider, seed)`:** convoluciona la excitación con una IR sintética, con la ganancia dada por `directivity(angle)`, y agrega ruido reproducible. Trae los modelos `omni` y `cardioid`.
 - **`CsvResultStore(directory)`:**
   - `measurements.csv`: índice, ángulo pedido, ángulo real, nivel por banda y archivo de la IR.
-  - `ir_000.npy`, …: IRs crudas.
+  - `ir_000.npy`, …: IRs tal como salen del pipeline (deconvolucionadas y compuertadas), en float32. *(Corregido en la Fase 4: el plan decía "crudas", pero `MeasurementPoint.ir` es la IR procesada.)*
   - `pattern.csv`: matriz banda × ángulo normalizada.
   - El nombre de la sesión, con su timestamp, lo decide la CLI, no el store. Así el store queda determinista. Por defecto se escribe en `data/raw/<timestamp>/`, que ya está en `.gitignore`.
 - **Contrato de `AudioIO`:** escrito ahora, aunque solo corre contra `SimulatedAudio`. Verifica que `sample_rate > 0`, que la salida tenga el mismo `sample_rate`, que la longitud sea ≥ la de la entrada y que todo sea finito. Queda listo para un futuro adaptador real.
@@ -454,4 +454,38 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **El nivel es relativo (dB re 1):** solo importan las diferencias entre ángulos.
 - **Cálculo en el constructor.** `PolarPattern` calcula los niveles al construirse, en vez de hacerlo de forma diferida: es más simple y el costo es bajo (una FFT por punto).
 - **Parámetros explícitos de la compuerta.** `default_pipeline` recibe `gate_start_s` y `gate_length_s`, no solo `(excitation, window)`, porque dependen de la geometría de la medición. Los valores por defecto son 0 y 10 ms.
+
+### Fase 4: Puertos `AudioIO` y `ResultStore` con sus adaptadores (2026-11-08)
+
+**Qué se hizo**
+- `ports.py`: agrega `AudioIO` (con la propiedad `sample_rate` y `play_and_record`) y `ResultStore` (`append` y `save_pattern`), que usan los tipos del dominio.
+- `adapters/simulated_audio.py`:
+  - Modelos `omni` y `cardioid`, y el registro `MODELS` para la CLI.
+  - `SimulatedAudio(angle_provider, directivity, sample_rate, delay_s, reflections, noise_db, tail_s, seed)`, con `impulse_response(angle)` público.
+  - La grabación es la excitación convolucionada con la IR, más una cola de silencio y ruido gaussiano reproducible. Si la excitación llega a otra frecuencia de muestreo, lanza `ValueError`.
+- `adapters/csv_store.py`:
+  - `CsvResultStore(directory, bands)`: crea el directorio y se niega a escribir sobre una sesión existente.
+  - `append` guarda `ir_NNN.npy` en float32 y agrega una fila a `measurements.csv` (abre y cierra el archivo en cada llamada). Las columnas son `index`, `target_deg`, `actual_deg`, `sample_rate`, `ir_file` y `level_<banda>_hz`.
+  - `save_pattern` escribe `pattern.csv`.
+  - Los valores se guardan con `repr()` para que la ida y vuelta sea exacta, incluido `-inf`.
+- Tests: `tests/contract/audio_contract.py` y `test_audio_contract.py` (5 casos × 2 configuraciones), `tests/adapters/test_simulated_audio.py` y `tests/adapters/test_csv_store.py`.
+
+**Validación**
+- `ruff check`, `ruff format --check` y `mypy --strict` (38 archivos) pasan sin errores.
+- `pytest`: 251 tests pasan y 16 de hardware quedan excluidos. Cobertura del 99 %; `simulated_audio.py`, `csv_store.py` y `ports.py` al 100 %.
+- El test de arquitectura sigue en verde: `ports` importa solo del dominio.
+- **Criterios de aceptación:**
+  - El contrato de audio pasa 5/5 con `simulated-omni` y 5/5 con `simulated-cardioid-noisy-44k` (cardioide a 44.1 kHz, con reflexión y ruido a −60 dB).
+  - Ida y vuelta: `csv.DictReader` recupera los ángulos y los niveles por banda exactos. `np.load` recupera las IRs en float32 (rtol 1e-6). `pattern.csv` se lee igual a `pattern.normalized()`, `-inf` incluido.
+  - Escritura incremental: después de cada `append` k (sin cerrar ni finalizar), el disco tiene k filas y k archivos `.npy`.
+- El adaptador simulado recupera −6.02 dB (±0.05) entre 0° y 90° con la cardioide, a través de `LogSweep`. El ruido queda a −40 dB (±0.5) y es reproducible con la misma semilla.
+
+**Desviaciones y decisiones**
+- **Las IRs se guardan procesadas, no crudas.** Se corrigió el plan, porque el caso de uso guarda la salida del pipeline. Si más adelante se quiere recompuertar sin volver a medir, habría que guardar también la IR sin compuerta. Por ahora no hay necesidad demostrada.
+- **Columna `sample_rate` en `measurements.csv`.** No estaba en el plan, pero sin ella las IRs `.npy` no se pueden reinterpretar.
+- **El store calcula los niveles por banda** con `octave_band_levels` del dominio y recibe las bandas en el constructor. Repite el cálculo de `PolarPattern`, pero son FFTs baratas y así `append` funciona antes de tener el patrón completo.
+- **`SimulatedAudio` acepta reflexiones de sala** (`reflections`), que no estaban en el plan. Así la integración de la Fase 5 prueba también que la compuerta las elimina.
+- **El contrato de `AudioIO` exige `ValueError`** ante una frecuencia de muestreo distinta: es un requisito razonable para cualquier adaptador real.
+- **`pattern.csv` usa `csv.reader`**, no `DictReader`, porque dos ángulos iguales repetirían el nombre de columna.
+- **Caracteres Unicode en docstrings.** Ruff (`RUF002`) rechaza `−` y `∗` porque se confunden con `-` y `*`. En el código se usa ASCII; en este documento no hay problema.
 
