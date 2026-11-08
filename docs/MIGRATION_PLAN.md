@@ -550,7 +550,7 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
   - Medición simulada en Python: rc=0, con la sesión `data/raw/ejemplo` creada.
   - Ejemplo con la placa: rc=0, ejecutado contra el emulador del firmware sustituyendo solo `SerialTurntable.open`.
 - `ruff check`, `ruff format --check` (42 archivos, incluido el README) y `mypy --strict` (41 archivos) pasan sin errores. `pytest`: 269 tests pasan y 16 de hardware quedan excluidos. Cobertura total del 99 %.
-- CI: ver el run del commit de esta fase.
+- CI: el run 42526016376 está en verde (`python` en 3.11, 3.12 y 3.13, y `firmware`).
 
 **Desviaciones y decisiones**
 - **El criterio del `grep` estaba mal planteado.** Tal como estaba escrito, era imposible de cumplir sin borrar la historia del propio plan. Se corrigió para excluir `MIGRATION_PLAN.md`, `.git/` y `.venv/`.
