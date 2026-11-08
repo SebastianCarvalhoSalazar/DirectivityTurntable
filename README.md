@@ -85,6 +85,17 @@ with Turntable("/dev/tty.usbmodemXXXX") as table:
 
 En macOS el puerto aparece como `/dev/tty.usbmodem...`. Puedes listarlo con `ls /dev/tty.usbmodem*`.
 
+## Desarrollo
+
+El código está migrando a `src/directivity/` (ver [docs/MIGRATION_PLAN.md](docs/MIGRATION_PLAN.md)). Requiere Python 3.11 o superior. En macOS el `python3` del sistema es 3.9, así que crea un entorno virtual con uno más nuevo (por ejemplo `brew install python@3.13`):
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+ruff check . && ruff format --check . && mypy && pytest
+```
+
 ## Próximos pasos
 
 - [ ] Probar el firmware en la placa y calibrar `STEPS_PER_REV`.

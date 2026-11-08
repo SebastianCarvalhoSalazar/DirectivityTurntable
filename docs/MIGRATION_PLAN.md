@@ -303,3 +303,33 @@ pytest -m hardware --port /dev/tty.usbmodemXXXX            # con la placa conect
 ## 11. Fuera de alcance (siguientes pasos)
 
 Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `AudioIO` ya escrito), gráficos polares y mapa de directividad (matplotlib), índice de directividad (DI) y validación con una fuente conocida, y calibración de `STEPS_PER_REV` en la placa.
+
+## 12. Registro de implementación
+
+### Fase 0: Repositorio, empaquetado y CI (2026-11-08)
+
+**Qué se hizo**
+- `git init`, un commit base (`5a35d7e`) y el repositorio público en GitHub: <https://github.com/SebastianCarvalhoSalazar/DirectivityTurntable>.
+- Python 3.13.18 instalado con Homebrew y un entorno virtual en `.venv/`.
+- `pyproject.toml`:
+  - Construcción con hatchling.
+  - Dependencias de ejecución: `numpy` y `pyserial`. Dependencias de desarrollo (`dev`): pytest, pytest-cov, ruff, mypy y `types-pyserial`.
+  - Comando `directivity` registrado.
+  - Configuración de ruff (con reglas `D` en convención Google), de mypy en modo estricto y de pytest (marcador `hardware`, excluido por defecto).
+- Esqueleto de `src/directivity/` (`domain/`, `application/`, `ports.py`, `adapters/`), `__main__.py` y una CLI mínima (`--version`).
+- `tests/test_architecture.py`, `tests/conftest.py` (opción `--port` y fixture `hardware_port`) y `tests/adapters/test_cli.py`.
+- `.github/workflows/ci.yml`:
+  - Job `python` con matriz 3.11, 3.12 y 3.13 que corre ruff, mypy y pytest con cobertura.
+  - Job `firmware` que compila el `.ino` para Leonardo.
+- README: sección "Desarrollo" que explica el entorno virtual (era la mitigación del riesgo de Python 3.9).
+
+**Validación**
+- Comandos: `pip install -e ".[dev]"`, `ruff check .`, `ruff format --check .`, `mypy` (12 archivos, sin errores) y `pytest` (9 pasan). `directivity --version` y `python -m directivity --version` funcionan.
+- Se agregó `import serial` en `domain/` y el test de arquitectura falló con `domain/_probe.py (domain) importa serial`. Después se revirtió.
+
+**Desviaciones y decisiones**
+- **CLI mínima desde la Fase 0.** El plan solo pedía paquetes vacíos, pero `__main__.py` y `[project.scripts]` apuntan a `adapters.cli:main`. Sin ese módulo, mypy y la instalación fallarían.
+- **El código heredado queda fuera de ruff.** `python/` y `docs/` se excluyen con `extend-exclude`: `python/turntable.py` no cumple las reglas `D` y se elimina en la Fase 6; ruff, además, intentaba formatear los bloques de código del Markdown.
+- **El test de arquitectura se prueba a sí mismo.** Además del ensayo manual, `test_checker_detects_violations` verifica de forma permanente que el verificador detecta 5 tipos de violación, incluidas las importaciones relativas.
+- **Clasificación de módulos.** El test de arquitectura usa `sys.stdlib_module_names` para distinguir la biblioteca estándar de las dependencias externas. Esa API existe desde Python 3.10, y el proyecto exige 3.11 o superior.
+- **Docstrings en los tests.** Ahí se relajan las reglas de docstring obligatorio (`D100`–`D106`): los nombres de las funciones `test_*` ya describen qué prueban. Las funciones auxiliares y los fixtures sí llevan docstring.

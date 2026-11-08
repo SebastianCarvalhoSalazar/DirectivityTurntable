@@ -6,3 +6,14 @@ venv/
 
 # Datos de medición
 data/raw/
+
+# Herramientas de desarrollo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+dist/
+build/
