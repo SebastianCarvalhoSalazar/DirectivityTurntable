@@ -43,7 +43,12 @@ Usa un protocolo de texto: una orden por línea a 115200 baudios.
 | `POS` | Devuelve el ángulo actual | `OK <ángulo>` |
 | `RELEASE` | Apaga las bobinas para que no se calienten | `OK RELEASED` |
 
-Si una orden falla, la respuesta empieza con `ERR`. El límite de ±360° evita que el cable del parlante se enrolle.
+Si una orden falla, la respuesta empieza con `ERR`:
+- `ERR angulo invalido`: el argumento no es un número, es `NaN` o tiene texto sobrante (`GOTO 5abc`).
+- `ERR fuera de rango (-360 a 360)`: el destino supera el límite de ±360°, que evita que el cable del parlante se enrolle.
+- `ERR comando desconocido` o `ERR linea demasiado larga` (las órdenes admiten hasta 31 caracteres).
+
+No se distinguen mayúsculas de minúsculas, se ignora `\r` y las líneas vacías no tienen respuesta.
 
 **Resolución:** con 2048 pasos por vuelta, cada paso equivale a unos 0,18°. Por eso `GOTO 5` puede devolver `OK 4.92`. El software registra siempre el ángulo real que devuelve la mesa, no el que se pidió.
 
@@ -68,6 +73,12 @@ El firmware usa 2048 pasos por vuelta como valor nominal (`STEPS_PER_REV`). Para
 3. Sube el sketch. La librería `Stepper` viene incluida con el IDE.
 
 La CI también compila el sketch para Leonardo en cada push.
+
+### Pruebas del firmware sin placa
+
+`tests/firmware/` compila el mismo `.ino` en el computador, con un sustituto de `Arduino.h` que imita la aritmética del AVR. Le envía órdenes por un "serial" simulado y compara la traza completa con el emulador de Python que usan los tests del cliente: respuestas, pasos del motor y pines. Así el firmware, el emulador y el cliente no pueden separarse sin que fallen los tests. Basta con tener un compilador de C++ (`c++`); si no hay, esos tests se saltan.
+
+La versión 2.0.0 del firmware corrige un giro indefinido con `GOTO NAN` y rechaza texto sobrante después del número. Fuera de eso, responde y gira exactamente igual que la versión 1: lo verificó una prueba diferencial entre ambas versiones, descrita en `docs/MIGRATION_PLAN.md`.
 
 ## Instalación
 

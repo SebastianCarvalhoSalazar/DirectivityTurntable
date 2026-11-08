@@ -39,4 +39,4 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install arduino:avr
           arduino-cli lib install Stepper
-          arduino-cli compile --fqbn arduino:avr:leonardo firmware/DirectivityTurntable
+          arduino-cli compile --fqbn arduino:avr:leonardo --warnings all firmware/DirectivityTurntable

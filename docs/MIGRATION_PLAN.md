@@ -1,6 +1,6 @@
 # Plan de migración a arquitectura hexagonal liviana — DirectivityTurntable
 
-> **Estado: completado (2026-11-08).** Las fases 0 a 6 están implementadas y validadas; el detalle de cada una está en la sección 12, *Registro de implementación*. Queda una verificación manual pendiente: correr el contrato de la mesa contra la placa (`pytest -m hardware --port …`).
+> **Estado: completado (2026-11-08).** Las fases 0 a 6 están implementadas y validadas, y se agregó una Fase 7 (reescritura del firmware); el detalle de cada una está en la sección 12, *Registro de implementación*. Queda una verificación manual pendiente: correr el contrato de la mesa contra la placa (`pytest -m hardware --port …`).
 
 ## 1. Contexto
 
@@ -141,7 +141,7 @@ class Pipeline:                    # Pipeline: composición ordenada de Stage
 
 ## 5. Lo que deliberadamente NO se hace
 
-Contenedor de inyección de dependencias, clases base abstractas (se usa `Protocol` estructural), bus de eventos, async, plugins, archivos de configuración (bastan los flags de argparse), capa de DTOs y mappers, un `Pipeline` genérico tipado, mocks escritos a mano cuando ya existe un adaptador simulado, y cambios al firmware.
+Contenedor de inyección de dependencias, clases base abstractas (se usa `Protocol` estructural), bus de eventos, async, plugins, archivos de configuración (bastan los flags de argparse), capa de DTOs y mappers, un `Pipeline` genérico tipado, mocks escritos a mano cuando ya existe un adaptador simulado, y cambios al firmware. *(El firmware se reescribió después, a pedido, en la Fase 7.)*
 
 ## 6. Fases
 
@@ -261,6 +261,19 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
   - Los ejemplos del README se ejecutan tal cual en modo `--simulate`.
   - La CI está en verde.
 - **Riesgo:** perder el uso "como librería" del README. Se mitiga documentando `SerialTurntable.open(...)` como reemplazo directo.
+
+### Fase 7 (agregada): Reescritura del firmware
+
+**Objetivo:** reescribir `DirectivityTurntable.ino` con buenas prácticas y documentación en cada función, corrigiendo los errores encontrados, y demostrar que en todo lo demás se comporta igual que la versión 1.
+
+- **Archivos:** `firmware/DirectivityTurntable/DirectivityTurntable.ino`, `tests/firmware/host/` (sustituto de `Arduino.h` y `Stepper.h`, y `host_main.cpp`), `tests/firmware/test_firmware_host.py`, `tests/support/firmware_emulator.py` y la CI (`--warnings all`).
+- **Criterios de aceptación:**
+  - Compila sin advertencias, en la Mac con `-Wall -Wextra -Wpedantic -Werror` y para Leonardo en la CI.
+  - **Prueba diferencial contra la versión 1** (ambas compiladas en la Mac con el mismo entorno de pruebas): trazas idénticas en todas las posiciones y empates de medio paso, y en miles de órdenes aleatorias. Las únicas diferencias son las correcciones.
+  - Test permanente firmware ↔ emulador en CI.
+  - El uso de flash y de RAM no empeora de forma significativa.
+- **Riesgos:**
+  - El entorno de la Mac no es el AVR. Se mitiga imitando `float32` en los literales, `Print::printFloat` y la gramática de `strtod` de avr-libc. La prueba en la placa sigue pendiente.
 
 ## 7. Estrategia de tests
 

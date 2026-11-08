@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tests.support.firmware_emulator import FirmwareEmulator, parse_number, print_float
+from tests.support.firmware_emulator import FirmwareEmulator, parse_angle, print_float
 
 
 def ask(emulator: FirmwareEmulator, line: str) -> str:
@@ -85,8 +85,30 @@ def test_print_float_matches_arduino(value: float, text: str) -> None:
     assert print_float(np.float32(value)) == text
 
 
-def test_parse_number_follows_strtod() -> None:
-    assert parse_number(" 12.5xyz") == np.float32(12.5)
-    assert parse_number("-1e1") == np.float32(-10.0)
-    assert parse_number(".5") == np.float32(0.5)
-    assert parse_number("x1") is None
+def test_parse_angle_follows_avr_strtod() -> None:
+    assert parse_angle(" 12.5") == np.float32(12.5)
+    assert parse_angle("-1e1") == np.float32(-10.0)
+    assert parse_angle(".5  ") == np.float32(0.5)
+    assert parse_angle("INF") == np.float32(np.inf)
+    assert parse_angle("x1") is None
+    assert parse_angle("0x10") is None  # sin hexadecimales: "0" seguido de texto sobrante
+
+
+@pytest.mark.parametrize("text", ["NAN", "-nan", "12.5xyz", "5 10", "9O", ""])
+def test_parse_angle_rejects_nan_and_trailing_text(text: str) -> None:
+    assert parse_angle(text) is None
+
+
+def test_nan_does_not_move() -> None:
+    emulator = FirmwareEmulator()
+    assert ask(emulator, "GOTO NAN") == "ERR angulo invalido"
+    assert ask(emulator, "MOVE NAN") == "ERR angulo invalido"
+    assert emulator.position_steps == 0
+
+
+def test_trace_records_hardware_events() -> None:
+    emulator = FirmwareEmulator()
+    ask(emulator, "GOTO 5")
+    ask(emulator, "RELEASE")
+    startup = ["@dw 8 0", "@dw 9 0", "@dw 10 0", "@dw 11 0"]
+    assert emulator.trace == [*startup, "@step 28", "OK 4.92", *startup, "OK RELEASED"]
