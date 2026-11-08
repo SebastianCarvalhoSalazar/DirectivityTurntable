@@ -569,6 +569,54 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **El criterio del `grep` estaba mal planteado.** Tal como estaba escrito, era imposible de cumplir sin borrar la historia del propio plan. Se corrigió para excluir `MIGRATION_PLAN.md`, `.git/` y `.venv/`.
 - **El ejemplo con la placa no se puede ejecutar en la Mac sin hardware.** Se validó contra el emulador, el mismo que usan los tests de contrato.
 
+### Fase 7 (agregada): Reescritura del firmware (2026-11-08)
+
+**Análisis de la versión 1**
+
+| # | Problema | Severidad | Qué hace la v2 |
+|---|---|---|---|
+| 1 | `GOTO NAN` y `MOVE NAN` pasan la verificación de rango (`x > 360 \|\| x < -360` es falso con NaN), y `lround(NaN)` da un número de pasos indefinido. En la compilación de la Mac la v1 **giró 541 pasos** y respondió `OK 0.00`. | Alta: giro descontrolado que puede enrollar el cable | `parseAngle` rechaza NaN con `ERR angulo invalido`. Además, `isWithinLimits` está escrito como `x >= -L && x <= L`, que también deja fuera a NaN. |
+| 2 | Se ignoraba el texto después del número: `GOTO 5abc` iba a 5°, un error de tipeo como `GOTO 9O` iba a 9°, y `GOTO 5 10` iba a 5°. | Media | Solo se permiten espacios después del número; si no, `ERR angulo invalido`. |
+| 3 | `toupper(char)` recibía valores negativos con bytes no ASCII: comportamiento indefinido. | Baja | `toupper((unsigned char)c)`. |
+| 4 | `setup()` esperaba la conexión USB antes de apagar las bobinas. | Baja (al arrancar los pines ya están en LOW) | Primero `setSpeed` y `releaseCoils`, después la espera. |
+| 5 | Estado y funciones globales sin `static`, números mágicos (el `5` de `strncmp`) y funciones sin documentar. | Calidad | Enlace interno (`static`), constantes con nombre (`GOTO_PREFIX`, `ARG_PREFIX_LENGTH`, `ANGLE_DECIMALS`, `SERIAL_BAUD`), un `static_assert` y comentarios Doxygen en cada función. Las órdenes se separan en funciones (`handleGoto`, `handleMove`, `processChar`, `replyError`). |
+
+Se mantuvieron a propósito:
+- Las mismas respuestas y mensajes.
+- Las líneas vacías sin respuesta.
+- Las bobinas energizadas después de cada giro (torque de retención).
+- Los giros bloqueantes.
+- El orden de pines 8–11 y la librería `Stepper`.
+
+**Verificación**
+- **Entorno de pruebas en la Mac** (`tests/firmware/host/`), que imita la semántica del AVR:
+  - `Print::printFloat` en `float`.
+  - `strtod` con la gramática de avr-libc: INF, INFINITY y NAN, sin hexadecimales, con el resultado en float.
+  - `digitalWrite` y `Stepper::step` se registran como eventos `@dw` y `@step`.
+- **La v1 se compiló en la Mac adaptando sus literales:** `360.0` pasa a `360.0f`, que es su significado exacto en AVR, donde `double` es `float`. `clang` no acepta `-fsingle-precision-constant`.
+- **Prueba diferencial v1 contra v2** (script en el scratchpad de la sesión, no versionado):
+  - Barrido exhaustivo de **20 482 órdenes**: todas las posiciones de −4096 a +4096 pasos, más cada empate de medio paso exacto y a ±1e-6. Las trazas son **idénticas**, línea por línea.
+  - **3042 casos aleatorios y de borde** (formatos enteros, decimales, con exponente, con signo y con espacios; minúsculas; `\r\n`; líneas largas; INF; 1e400; hexadecimales). Hay 2423 idénticos. Los 619 restantes son exactamente las correcciones (4 de NaN y 615 con texto sobrante), y en todos la v2 responde `ERR angulo invalido` sin girar. **No hubo diferencias inesperadas.**
+- **Test permanente** `tests/firmware/test_firmware_host.py` (27 casos, corre en la CI):
+  - Compila el `.ino` real con `-Wall -Wextra -Wpedantic -Werror` y compara la traza completa con `FirmwareEmulator`.
+  - Cubre una sesión de protocolo, NaN y texto sobrante, casos límite, `\r\n`, bytes no ASCII, un barrido exhaustivo de ±2 vueltas y 2000 órdenes aleatorias.
+- **Prueba de mutación:**
+  - Si se cambia el límite del firmware a 359.9°, fallan 2 tests.
+  - Si se quita el rechazo de NaN del emulador, fallan 4 tests.
+  - Revertidas las dos mutaciones, todo vuelve a verde.
+- **AVR (CI, run 42527234592):** compila sin advertencias del sketch. La v1 usaba 9014 bytes de flash y 263 de RAM; la v2 usa **9130 bytes de flash (+116, +1.3 %) y 263 de RAM (igual)**.
+- Suite completa: 304 tests pasan y 16 de hardware quedan excluidos. `ruff` y `mypy --strict` pasan sin errores.
+
+**Hallazgos**
+- **Error en mi primera versión del formato.** La primera v2 imprimía los ángulos con aritmética entera, porque yo suponía que el resultado era idéntico al de `Serial.print(float, 2)`. La prueba diferencial lo desmintió. En los empates exactos de medio centésimo, por ejemplo −118.125° (−672 pasos), el `printFloat` de la v1 a veces redondea hacia abajo por el error de `float32` (`-118.12`) y a veces hacia arriba (`5.625` da `5.63`). Ninguno es un error, porque ambos valores están a la misma distancia del exacto, pero el texto cambiaba. Como el pedido era comportarse igual, se volvió a `Serial.print(float, 2)`.
+- **No se puede compilar para AVR en esta Mac.** El `avr-gcc` del core de Arduino es x86_64 y necesitaría Rosetta. La compilación para AVR queda en la CI; `arduino-cli` 1.5.1 sí quedó instalado con Homebrew.
+
+**Desviaciones y decisiones**
+- **Cambio de alcance.** La sección 5 excluía el firmware; se reescribió a pedido y se documenta como Fase 7.
+- **El emulador ahora replica la v2.** Acepta INF y NAN como avr-libc, rechaza NaN y texto sobrante, convierte a mayúsculas solo en ASCII y registra la traza. Con eso desaparece la "divergencia conocida" de la Fase 1.
+- **El script diferencial no se versionó**, porque depende de la v1 sacada del historial de git. Lo permanente es la comparación firmware ↔ emulador.
+- **Sigue pendiente la prueba en la placa:** `pytest -m hardware --port …`.
+
 ## 13. Resumen de la migración
 
 | Fase | Resultado | Tests (acumulados) |
@@ -580,6 +628,7 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 | 4 | `AudioIO`, `ResultStore`, `SimulatedAudio` y `CsvResultStore` | 251 |
 | 5 | `MeasureDirectivity` y `directivity measure` | 269 |
 | 6 | Retiro del cliente heredado y README | 269 |
+| 7 | Firmware v2.0.0 (NaN, texto sobrante y calidad) verificado contra la v1; test firmware ↔ emulador | 304 |
 
 **Pendiente fuera del alcance:**
 - Correr `pytest -m hardware --port …` con la placa y anotarlo en el README.
