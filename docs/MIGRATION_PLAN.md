@@ -275,7 +275,7 @@ Los tests de contrato son la verificación concreta de **LSP**: cualquier adapta
 
 - **Disparadores:** `push` y `pull_request`.
 - **Job `python`:** `ubuntu-latest` con matriz de Python 3.11, 3.12 y 3.13; `actions/setup-python` con caché de pip; `pip install -e ".[dev]"`; luego `ruff check`, `ruff format --check`, `mypy` y `pytest --cov=directivity --cov-report=term-missing`. Los tests `hardware` se excluyen por `addopts`.
-- **Job `firmware` (opcional, barato):** `arduino/compile-sketches` con `fqbn: arduino:avr:leonardo`. Detecta si el `.ino` deja de compilar.
+- **Job `firmware`:** `arduino/setup-arduino-cli` y luego `arduino-cli compile --fqbn arduino:avr:leonardo` (con la librería `Stepper`). Detecta si el `.ino` deja de compilar. *(Corregido en la Fase 0: `arduino/compile-sketches` falla en Ubuntu 26.04; ver el registro.)*
 
 ## 9. SOLID y patrones: dónde se aplican
 
@@ -333,3 +333,9 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **El test de arquitectura se prueba a sí mismo.** Además del ensayo manual, `test_checker_detects_violations` verifica de forma permanente que el verificador detecta 5 tipos de violación, incluidas las importaciones relativas.
 - **Clasificación de módulos.** El test de arquitectura usa `sys.stdlib_module_names` para distinguir la biblioteca estándar de las dependencias externas. Esa API existe desde Python 3.10, y el proyecto exige 3.11 o superior.
 - **Docstrings en los tests.** Ahí se relajan las reglas de docstring obligatorio (`D100`–`D106`): los nombres de las funciones `test_*` ya describen qué prueban. Las funciones auxiliares y los fixtures sí llevan docstring.
+- **CI de firmware.** `arduino/compile-sketches@v1` falló en el runner (`ubuntu-latest` ya es Ubuntu 26.04): instala internamente Python 3.12.4, que no está disponible para esa versión. Se reemplazó por `arduino-cli` directo y se corrigió la sección 8. Además se subió a `actions/checkout@v5` y `actions/setup-python@v6`, que usan Node 24 en vez de Node 20, ya obsoleto.
+
+**Resultado en CI**
+- Run 42524203541 en verde: `python` pasa en 3.11, 3.12 y 3.13, y `firmware` compila.
+- **Hallazgo:** el firmware compila sin errores para `arduino:avr:leonardo`. Sigue pendiente probarlo en la placa.
+- Queda solo un aviso: `arduino/setup-arduino-cli@v2` todavía usa Node 20. No bloquea.
