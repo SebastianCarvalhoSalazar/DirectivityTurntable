@@ -206,7 +206,7 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
 - **Archivos:** `domain/pipeline.py` (`Pipeline`, `Deconvolve`, `Gate(window, start_s, length_s)`, `default_pipeline(excitation, window)`), `domain/polar.py` (`MeasurementPoint(target_deg, actual_deg, ir)`, `octave_band_levels(ir, centers)`, `PolarPattern` con `angles()`, `levels(band)` y `normalized(band)` relativo a 0°) y sus tests.
 - **Criterios de aceptación:**
   - `Pipeline([])` es la identidad, y las etapas corren en orden (se verifica con etapas espía).
-  - Con ruido rosa sintético, `octave_band_levels` reparte la energía de forma consistente con el número de bins de cada banda (tolerancia de ±0.5 dB). Un tono de 1 kHz cae en la banda de 1 kHz.
+  - Con ruido rosa sintético, `octave_band_levels` da la misma energía en todas las octavas (rango < 0.5 dB). Con ruido blanco, la energía es proporcional al número de bins, es decir +3.01 dB por octava (±0.1 dB). Un tono de 1 kHz cae en la banda de 1 kHz. *(Criterio corregido en la Fase 3: la versión original atribuía al ruido rosa el comportamiento del blanco.)*
   - Un `PolarPattern` con ganancias de cardioide da −6.02 dB a 90° (±0.05 dB). La normalización usa el **ángulo real**, no el pedido.
 - **Riesgos:**
   - **Compuerta inconsistente entre ángulos.** Se mitiga fijando el inicio de `Gate` con un retardo común (distancia constante), no con el pico de cada IR.
@@ -415,4 +415,43 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - **Normalización por pico.** Se eligió que el inverso dé pico 1 contra el propio barrido, en vez de ganancia unitaria en la banda pasante. Así una IR `g·δ[n−N]` se recupera con pico `g` exacto, que es lo que pide el criterio. Para el patrón polar la constante da igual, porque se normaliza contra 0°.
 - **Más tests que los pedidos:** separación de directo y reflexión, robustez al ruido, frecuencia instantánea y distorsión.
 - **Ventana asimétrica descartada.** Se mantuvo la Tukey simétrica del plan en vez de agregar una "media ventana" (plana al inicio). Con un margen previo adecuado, la simétrica basta, y una ventana más sería una abstracción sin necesidad demostrada.
+
+### Fase 3: Pipeline de procesamiento y patrón polar (2026-11-08)
+
+**Qué se hizo**
+- `domain/pipeline.py`:
+  - `Stage = Callable[[Signal], Signal]`.
+  - `Pipeline(stages)`: guarda una tupla inmutable, la expone en `stages` y una lista vacía equivale a la identidad.
+  - `Deconvolve(excitation)`.
+  - `Gate(window, start_s, length_s)`: valida los tiempos y expone `low_frequency_limit_hz = 1/length_s`. Su docstring advierte sobre el retardo común y el margen respecto del borde de la ventana.
+  - `default_pipeline(excitation, window=None, gate_start_s=0.0, gate_length_s=0.010)`.
+- `domain/polar.py`:
+  - `exact_center` y `band_edges` (octavas en base 2: `fc/√2` a `fc·√2`).
+  - `octave_band_levels(ir, centers)`: energía FFT por banda en dB; `-inf` si la banda está en silencio; `ValueError` si la banda supera Nyquist o no contiene bins.
+  - `MeasurementPoint(target_deg, actual_deg, ir)`.
+  - `PolarPattern(points, centers)`: calcula los niveles al construirse y expone `angles()` (reales), `levels(band)`, `normalized(band)`, `bands`, `points` y `reference_index`. La referencia es el punto cuyo ángulo **real**, llevado a (−180°, 180°], queda más cerca de 0°.
+- Tests: `tests/domain/test_pipeline.py` y `tests/domain/test_polar.py`.
+
+**Validación**
+- `ruff check`, `ruff format --check` y `mypy --strict` (32 archivos) pasan sin errores.
+- `pytest`: 217 tests pasan y 16 de hardware quedan excluidos. Cobertura del 99 %; todo `domain/` al 100 %.
+- **Criterios de aceptación:**
+  - `Pipeline([])` devuelve la misma señal (`is`). Tres etapas espía corren en orden `a, b, c` y cada una deja su huella.
+  - Ruido rosa determinista (magnitud exacta `1/√k`, fases aleatorias): rango de **0.039 dB** entre 63 Hz y 16 kHz.
+  - Ruido blanco: pasos de **2.99 a 3.05 dB** por octava.
+  - Un tono de 1 kHz cae en la banda de 1 kHz, más de 60 dB por encima de las demás.
+  - Cardioide: **−6.0206 dB** a 90° en todas las bandas, y −2.50 dB a 60°.
+  - El patrón usa el ángulo real en `angles()` y en la elección de la referencia. Hay tests con pedido ≠ real, con barridos que empiezan en −90° y con 360° y ±350° equivalentes a 0° o −10°.
+- Integración en el dominio: `default_pipeline` sobre una grabación sintética (directo a 3 ms y reflexión a 18.75 ms) recupera el directo (1.00 ± 0.02) y anula todo lo que queda después de la compuerta de 10 ms.
+
+**Hallazgos**
+- **El criterio del plan estaba mal.** Atribuía al ruido rosa la energía proporcional al número de bins, que es la propiedad del ruido blanco. Se corrigió en la Fase 3 y se prueban ambos casos.
+- **Pruebas espectrales deterministas.** Generar el ruido "de magnitud exacta y fase aleatoria" en vez de ruido aleatorio en el tiempo deja las tolerancias en centésimas de dB.
+
+**Desviaciones y decisiones**
+- **`OCTAVE_CENTERS` por defecto va de 63 Hz a 8 kHz**, sin 16 kHz: el borde superior de esa banda (22.6 kHz) supera Nyquist a 44.1 kHz. Quien mida a 48 kHz puede pedir la banda de 16 kHz explícitamente.
+- **Centros exactos en base 2** (`1000·2^n`) para los bordes, con los nombres nominales (63, 125…) como claves. Así 63 Hz usa 62.5 Hz como centro.
+- **El nivel es relativo (dB re 1):** solo importan las diferencias entre ángulos.
+- **Cálculo en el constructor.** `PolarPattern` calcula los niveles al construirse, en vez de hacerlo de forma diferida: es más simple y el costo es bajo (una FFT por punto).
+- **Parámetros explícitos de la compuerta.** `default_pipeline` recibe `gate_start_s` y `gate_length_s`, no solo `(excitation, window)`, porque dependen de la geometría de la medición. Los valores por defecto son 0 y 10 ms.
 
