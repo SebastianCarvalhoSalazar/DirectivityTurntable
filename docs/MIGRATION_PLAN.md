@@ -180,7 +180,7 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
 - **Tests de adaptador** (`tests/adapters/test_serial_turntable.py`): `ERR` pasa a `TurntableError`, una respuesta vacía se trata como timeout, una respuesta inesperada lanza error, un PING fallido cierra el transporte y `"OK"` sin payload da `TurntableError`.
 - **Criterios de aceptación:**
   - El contrato pasa con `simulated` y `serial-emulated` en CI.
-  - `directivity sweep --simulate --step 5` imprime 73 líneas y la última muestra `real 360.00°`.
+  - `directivity sweep --simulate --step 5` imprime 73 líneas de puntos (más el mensaje final) y la última muestra `real 360.00°`.
   - Con la placa conectada, `pytest -m hardware --port /dev/tty.usbmodemXXXX` pasa. Esta verificación es manual y queda registrada en el README.
 - **Riesgos:**
   - **El emulador se aparta del firmware.** Se mitiga corriendo el contrato contra el hardware y comentando en el emulador las líneas del `.ino` que replica.
@@ -339,3 +339,44 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - Run 42524203541 en verde: `python` pasa en 3.11, 3.12 y 3.13, y `firmware` compila.
 - **Hallazgo:** el firmware compila sin errores para `arduino:avr:leonardo`. Sigue pendiente probarlo en la placa.
 - Queda solo un aviso: `arduino/setup-arduino-cli@v2` todavía usa Node 20. No bloquea.
+
+### Fase 1: Puerto `Turntable`, adaptadores y tests de contrato (2026-11-08)
+
+**Qué se hizo**
+- `domain/angles.py`: `validate_angle` (además rechaza valores no finitos), `degrees_to_steps` y `steps_to_degrees` con redondeo de empates alejándose de cero, como `lround`, `quantize`, `half_step_deg` y `SweepPlan`.
+- `ports.py`: `Turntable` y `TurntableError`.
+- `adapters/serial_turntable.py`:
+  - `LineTransport` (Protocol interno del adaptador).
+  - `PySerialTransport`: usa `serial_for_url`, así que acepta `loop://` en los tests, y traduce `OSError` y `SerialException` a `TurntableError`.
+  - `SerialTurntable`: verifica `PING` y cierra el transporte si falla; acepta `OK` y `ERR` solo como prefijos exactos; un ángulo no numérico da `TurntableError`; valida el ángulo antes de enviarlo; conserva `move()` como método extra.
+- `adapters/simulated_turntable.py`: usa la aritmética del dominio y expone `is_released` e `is_closed` para los tests.
+- `adapters/cli.py`:
+  - Subcomando `sweep --port | --simulate` con `--start`, `--stop`, `--step` y `--dwell` (por defecto 1 s con la placa y 0 s simulado).
+  - `run_sweep` vuelve a 0° y libera las bobinas en un `finally`. Los errores se informan por stderr con código de salida 1.
+- `tests/support/firmware_emulator.py`: replica el `.ino` con `np.float32`, incluido `Print::printFloat` del core de Arduino.
+- Tests:
+  - Contrato de 16 casos (`tests/contract/`) corrido contra `simulated` y `serial-emulated`, más `serial-hardware` con el marcador `hardware`.
+  - `tests/domain/test_angles.py`, `tests/adapters/test_serial_turntable.py`, `tests/support/test_firmware_emulator.py` y tests de `sweep` en `tests/adapters/test_cli.py`.
+- README: cómo correr el contrato contra la placa, con una tabla para registrar las ejecuciones.
+
+**Validación**
+- `ruff check`, `ruff format --check` y `mypy --strict` (24 archivos) pasan sin errores.
+- `pytest`: 115 tests pasan y 16 de hardware quedan excluidos. Cobertura total del 98 %; `angles.py`, `serial_turntable.py` y `cli.py` al 100 %.
+- Contrato: 16/16 con `simulated` y 16/16 con `serial-emulated`.
+- `directivity sweep --simulate --step 5` imprime 73 puntos (`0.00 → 0.00`, `5.00 → 4.92`, `10.00 → 10.02` … `360.00 → 360.00`) y el mensaje final.
+- `pytest -m hardware` sin `--port` da 16 tests saltados con el mensaje "indica la placa con --port <puerto>".
+- **Pendiente (manual):** correr `pytest -m hardware --port …` con la placa. No hay ninguna conectada (`/dev/tty.usbmodem*` no existe). Queda anotado en el README. No bloquea porque el plan lo define como verificación manual.
+
+**Hallazgos**
+- **Error del cliente heredado: `SweepPlan` podía pasarse del límite.** `round(stop/step)` podía superar `stop`: con `--step 11` daba 33 pasos y llegaba a 363°, que el firmware rechaza con `ERR`. `SweepPlan` usa `floor` con tolerancia y lo cubre un test.
+- **Errores de pyserial fuera del contrato.** Un puerto inexistente o un USB desconectado lanzaban `serial.SerialException`, no `TurntableError`. Ahora se traducen en el transporte.
+- **El emulador confirma la afirmación del README** en aritmética `float32`, como en AVR: 72 giros de 5° suman exactamente 2048 pasos (360.00°).
+- **Divergencia conocida del emulador.** `strtod` de avr-libc acepta `INF` y `NAN`; el emulador responde `ERR angulo invalido`. No importa en la práctica porque el cliente nunca los envía.
+- **Línea vacía.** El firmware no responde nada; para el cliente se ve como un timeout. Lo cubre un test del emulador.
+
+**Desviaciones y decisiones**
+- **`AngleOutOfRangeError(ValueError)` en el dominio.** El dominio no puede importar `ports`, y los adaptadores la traducen a `TurntableError`.
+- **El punto 6 del contrato es el teardown del fixture `table`**, no un test: `goto(0)`, `release()` y `close()`.
+- **Doble de pruebas guionado.** Se usa `ScriptedTransport` porque el emulador solo produce respuestas válidas. La sección 5 lo permite: no existe un adaptador simulado capaz de generar respuestas malformadas.
+- **Criterio del barrido aclarado en el plan:** son 73 líneas de puntos más un mensaje final.
+

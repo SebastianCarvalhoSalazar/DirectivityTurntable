@@ -96,6 +96,22 @@ pip install -e ".[dev]"
 ruff check . && ruff format --check . && mypy && pytest
 ```
 
+Barrido de prueba sin placa: `directivity sweep --simulate --step 5`. Con la placa: `directivity sweep --port /dev/tty.usbmodemXXXX --step 5`.
+
+### Tests con la placa
+
+Los tests de contrato de la mesa corren siempre contra la mesa simulada y contra un emulador del firmware. Para correrlos contra la placa real, conéctala y ejecuta:
+
+```bash
+pytest -m hardware --port /dev/tty.usbmodemXXXX
+```
+
+El plato gira hasta ±360° y siempre termina en 0° con las bobinas apagadas. Tarda alrededor de un minuto.
+
+| Fecha | Placa / firmware | Resultado |
+|---|---|---|
+| (pendiente) | Leonardo + `DirectivityTurntable.ino` | Aún no se corre en la placa |
+
 ## Próximos pasos
 
 - [ ] Probar el firmware en la placa y calibrar `STEPS_PER_REV`.
