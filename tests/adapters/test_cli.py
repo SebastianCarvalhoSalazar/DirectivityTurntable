@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -152,3 +153,39 @@ class TestMeasure:
     def test_bands_for_sample_rate(self) -> None:
         assert cli.bands_for(48_000)[-1] == 8000.0
         assert cli.bands_for(16_000)[-1] == 4000.0
+
+
+class TestSelftest:
+    def test_simulated_selftest_passes_and_writes_report(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["selftest", "--simulate", "--quick", "--out", str(tmp_path)]) == 0
+        out = capsys.readouterr().out
+        assert "RESULTADO: OK (4/5 ok, 1 no aplica)" in out
+        (session,) = tmp_path.iterdir()
+        document = json.loads((session / cli.SELFTEST_REPORT_FILE).read_text(encoding="utf-8"))
+        assert document["passed"] is True
+        assert document["turntable"] == "simulada"
+        assert document["quick"] is True
+        assert {"date", "plan", "steps_per_rev", "rpm", "version", "python"} <= set(document)
+        assert len(list(session.glob("ir_*.npy"))) == 5  # 0..180 cada 45°
+
+    def test_bad_port_is_reported(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert main(["selftest", "--port", "/dev/no-existe", "--out", str(tmp_path)]) == 1
+        assert "no se pudo abrir el puerto" in capsys.readouterr().err
+
+    def test_format_report_marks_failures(self) -> None:
+        from directivity.application.self_test import Check, SelfTestReport, Thresholds
+
+        report = SelfTestReport(
+            (
+                Check("A", 1.0, "< 2", "ms", "ok"),
+                Check("B", None, "n/a", "ms", "skip", "motivo"),
+                Check("C", 9.0, "< 2", "dB", "fail"),
+            ),
+            {},
+            Thresholds(),
+        )
+        lines = cli.format_report(report)
+        assert "✅" in lines[1] and "⏭" in lines[2] and "(motivo)" in lines[2] and "❌" in lines[3]
+        assert lines[-1] == "RESULTADO: FALLÓ (1/3 ok, 1 no aplica)"

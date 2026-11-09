@@ -6,6 +6,7 @@ venv/
 
 # Datos de medición
 data/raw/
+data/selftest/
 
 # Herramientas de desarrollo
 .mypy_cache/

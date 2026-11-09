@@ -6,6 +6,8 @@ Es el único módulo que instancia adaptadores concretos y los conecta.
 from __future__ import annotations
 
 import argparse
+import json
+import platform
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -16,10 +18,16 @@ from pathlib import Path
 from directivity import __version__
 from directivity.adapters.csv_store import CsvResultStore
 from directivity.adapters.serial_turntable import SerialTurntable
-from directivity.adapters.simulated_audio import MODELS, SimulatedAudio
+from directivity.adapters.simulated_audio import MODELS, SimulatedAudio, cardioid
 from directivity.adapters.simulated_turntable import SimulatedTurntable
 from directivity.application.measure_directivity import MeasureDirectivity
-from directivity.domain.angles import SweepPlan
+from directivity.application.self_test import (
+    QUICK_TIMING_TARGETS,
+    TIMING_TARGETS,
+    SelfTest,
+    SelfTestReport,
+)
+from directivity.domain.angles import STEPS_PER_REV, SweepPlan
 from directivity.domain.pipeline import default_pipeline
 from directivity.domain.polar import (
     OCTAVE_CENTERS,
@@ -48,6 +56,15 @@ SIM_NOISE_DB = -80.0
 
 REPORT_BAND_HZ = 1000.0
 """Banda que se muestra en pantalla durante la medición."""
+
+FIRMWARE_RPM = 5.0
+"""Velocidad del motor en el firmware (``MOTOR_RPM`` en el .ino); fija el tiempo por paso."""
+
+SELFTEST_REPORT_FILE = "selftest.json"
+"""Nombre del reporte JSON que deja ``selftest`` en la carpeta de la sesión."""
+
+STATUS_ICONS = {"ok": "✅", "fail": "❌", "skip": "⏭"}
+"""Íconos de estado de cada check en la tabla de ``selftest``."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,6 +119,25 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"pausa tras cada giro en s ({HARDWARE_SETTLE_S} con la placa, 0 simulado)",
     )
     measure.set_defaults(handler=_cmd_measure)
+
+    selftest = commands.add_parser(
+        "selftest",
+        help="autoprueba de punta a punta: mesa, procesamiento y almacenamiento (audio simulado)",
+    )
+    _add_turntable_options(selftest)
+    selftest.add_argument(
+        "--out", type=Path, default=Path("data/selftest"), help="carpeta de los reportes"
+    )
+    selftest.add_argument(
+        "--quick", action="store_true", help="variante rápida: menos giros y medición de 0° a 180°"
+    )
+    selftest.add_argument(
+        "--rpm",
+        type=float,
+        default=FIRMWARE_RPM,
+        help=f"velocidad del motor en el firmware (por defecto {FIRMWARE_RPM:g})",
+    )
+    selftest.set_defaults(handler=_cmd_selftest)
     return parser
 
 
@@ -287,6 +323,90 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         print(f"  {angle:7.2f}°  {format_db(level)} dB")
     print(f"Sesión guardada en {session}")
     return 0
+
+
+def format_report(report: SelfTestReport) -> list[str]:
+    """Da formato de tabla a los checks de la autoprueba.
+
+    Args:
+        report: Reporte de ``SelfTest``.
+
+    Returns:
+        Líneas de texto: encabezado, una fila por check y el resultado final.
+    """
+    lines = [f"{'Prueba':<30} {'Medido':>12}  {'Umbral':<16} Estado"]
+    for check in report.checks:
+        measured = "—" if check.measured is None else f"{check.measured:.3f} {check.unit}"
+        detail = f"  ({check.detail})" if check.detail else ""
+        icon = STATUS_ICONS[check.status]
+        lines.append(f"{check.name:<30} {measured:>12}  {check.threshold:<16} {icon}{detail}")
+    ok = sum(check.status == "ok" for check in report.checks)
+    skipped = sum(check.status == "skip" for check in report.checks)
+    verdict = "OK" if report.passed else "FALLÓ"
+    extra = f", {skipped} no aplica" if skipped else ""
+    lines.append(f"RESULTADO: {verdict} ({ok}/{len(report.checks)} ok{extra})")
+    return lines
+
+
+def _cmd_selftest(args: argparse.Namespace) -> int:
+    """Subcomando ``selftest``: autoprueba de punta a punta con audio simulado.
+
+    Args:
+        args: Argumentos de la línea de comandos.
+
+    Returns:
+        Código de salida: 0 si ningún check falla, 1 si alguno falla.
+    """
+    sample_rate = 48_000
+    excitation = LogSweep(duration_s=0.5 if args.quick else 1.0)
+    pipeline = default_pipeline(excitation, TukeyWindow(), gate_start_s=0.0, gate_length_s=0.010)
+    bands = bands_for(sample_rate)
+    plan = SweepPlan(0.0, 180.0, 45.0) if args.quick else SweepPlan(0.0, 360.0, 10.0)
+    timing = QUICK_TIMING_TARGETS if args.quick else TIMING_TARGETS
+    expected_step_s = None if args.simulate else 60.0 / (STEPS_PER_REV * args.rpm)
+    session = args.out / session_name()
+
+    with ExitStack() as stack:
+        table = stack.enter_context(closing(open_turntable(args)))
+        audio = SimulatedAudio(
+            angle_provider=table.position,
+            directivity=cardioid,
+            sample_rate=sample_rate,
+            delay_s=SIM_DELAY_S,
+            reflections=SIM_REFLECTIONS,
+            noise_db=SIM_NOISE_DB,
+        )
+        report = SelfTest(
+            table,
+            audio,
+            CsvResultStore(session, bands),
+            excitation,
+            pipeline,
+            reference_gain=cardioid,
+            bands=bands,
+            settle_s=0.0 if args.simulate else 0.3,
+            progress=print,
+        ).run(plan, expected_step_s, timing)
+
+    document = {
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "turntable": "simulada" if args.simulate else args.port,
+        "quick": args.quick,
+        "plan": {"start": plan.start, "stop": plan.stop, "step": plan.step},
+        "steps_per_rev": STEPS_PER_REV,
+        "rpm": args.rpm,
+        "version": __version__,
+        "python": platform.python_version(),
+        **report.to_dict(),
+    }
+    report_path = session / SELFTEST_REPORT_FILE
+    report_path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print()
+    for line in format_report(report):
+        print(line)
+    print(f"Reporte: {report_path}")
+    return 0 if report.passed else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
