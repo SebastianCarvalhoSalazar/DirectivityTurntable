@@ -1,6 +1,6 @@
 # Plan de migración a arquitectura hexagonal liviana — DirectivityTurntable
 
-> **Estado: completado (2026-11-08).** Las fases 0 a 6 están implementadas y validadas, y se agregó una Fase 7 (reescritura del firmware); el detalle de cada una está en la sección 12, *Registro de implementación*. Queda una verificación manual pendiente: correr el contrato de la mesa contra la placa (`pytest -m hardware --port …`).
+> **Estado: completado (2026-11-08).** Las fases 0 a 6 están implementadas y validadas, y se agregó una Fase 7 (reescritura del firmware); el detalle de cada una está en la sección 12, *Registro de implementación*. El contrato de la mesa pasó contra la placa real el 2026-11-08 (16/16; ver "Prueba de punta a punta con hardware" en la sección 12). Queda pendiente la calibración física de los pasos por vuelta.
 
 ## 1. Contexto
 
@@ -183,7 +183,7 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
 - **Criterios de aceptación:**
   - El contrato pasa con `simulated` y `serial-emulated` en CI.
   - `directivity sweep --simulate --step 5` imprime 73 líneas de puntos (más el mensaje final) y la última muestra `real 360.00°`.
-  - Con la placa conectada, `pytest -m hardware --port /dev/tty.usbmodemXXXX` pasa. Esta verificación es manual y queda registrada en el README.
+  - Con la placa conectada, `pytest -m hardware --port=/dev/tty.usbmodemXXXX` pasa. Esta verificación es manual y queda registrada en el README.
 - **Riesgos:**
   - **El emulador se aparta del firmware.** Se mitiga corriendo el contrato contra el hardware y comentando en el emulador las líneas del `.ino` que replica.
   - **El test de hardware mueve el plato hasta 360°**, unos 12 s a 5 RPM. Se mitiga quedándose dentro de ±360°, cerrando siempre en `goto(0)` y usando un timeout de 30 s.
@@ -313,7 +313,7 @@ pip install -e ".[dev]"
 ruff check . && ruff format --check . && mypy && pytest --cov=directivity
 directivity sweep --simulate --step 5                      # 73 líneas, termina en 360.00°
 directivity measure --simulate --source cardioid --step 10 --out data/raw
-pytest -m hardware --port /dev/tty.usbmodemXXXX            # con la placa conectada
+pytest -m hardware --port=/dev/tty.usbmodemXXXX            # con la placa conectada
 ```
 
 ## 11. Fuera de alcance (siguientes pasos)
@@ -381,7 +381,7 @@ Adaptador de audio real (`SoundDeviceAudio`, que se conecta al contrato de `Audi
 - Contrato: 16/16 con `simulated` y 16/16 con `serial-emulated`.
 - `directivity sweep --simulate --step 5` imprime 73 puntos (`0.00 → 0.00`, `5.00 → 4.92`, `10.00 → 10.02` … `360.00 → 360.00`) y el mensaje final.
 - `pytest -m hardware` sin `--port` da 16 tests saltados con el mensaje "indica la placa con --port <puerto>".
-- **Pendiente (manual):** correr `pytest -m hardware --port …` con la placa. No hay ninguna conectada (`/dev/tty.usbmodem*` no existe). Queda anotado en el README. No bloquea porque el plan lo define como verificación manual.
+- **Pendiente (manual):** correr `pytest -m hardware --port=…` con la placa. No hay ninguna conectada (`/dev/tty.usbmodem*` no existe). Queda anotado en el README. No bloquea porque el plan lo define como verificación manual.
 
 **Hallazgos**
 - **Error del cliente heredado: `SweepPlan` podía pasarse del límite.** `round(stop/step)` podía superar `stop`: con `--step 11` daba 33 pasos y llegaba a 363°, que el firmware rechaza con `ERR`. `SweepPlan` usa `floor` con tolerancia y lo cubre un test.
@@ -615,7 +615,36 @@ Se mantuvieron a propósito:
 - **Cambio de alcance.** La sección 5 excluía el firmware; se reescribió a pedido y se documenta como Fase 7.
 - **El emulador ahora replica la v2.** Acepta INF y NAN como avr-libc, rechaza NaN y texto sobrante, convierte a mayúsculas solo en ASCII y registra la traza. Con eso desaparece la "divergencia conocida" de la Fase 1.
 - **El script diferencial no se versionó**, porque depende de la v1 sacada del historial de git. Lo permanente es la comparación firmware ↔ emulador.
-- **Sigue pendiente la prueba en la placa:** `pytest -m hardware --port …`.
+- **Sigue pendiente la prueba en la placa:** `pytest -m hardware --port=…`.
+
+### Prueba de punta a punta con hardware (2026-11-08)
+
+**Montaje:**
+- Arduino Leonardo con el firmware 2.0.0, cargado con `arduino-cli`; requirió instalar Rosetta.
+- L298N.
+- Motor **24BYJ48A de 12 V**. La etiqueta del motor no dice 28BYJ-48, como decía el README; se corrigió.
+- Adaptador de 12 V y 1.5 A con su cable pelado, conectado directo a la bornera del L298N. Tierra común en el borne GND.
+- Conexiones revisadas con fotos y con la medición de polaridad que hizo el usuario.
+
+**Resultados**
+
+| Prueba | Resultado |
+|---|---|
+| Contrato `pytest -m hardware --port=/dev/tty.usbmodem1201` | **16/16 pasan** en 140 s. Vuelta completa en 12.00 s (teórico 2048 × 5.859 ms = 12.00 s). |
+| Latencia serial (`POS` × 100) | Media de 1.00 ms; p95 de 1.03 ms; máximo de 1.05 ms. |
+| Velocidad de paso (ajuste lineal tiempo/pasos, 8 giros) | **5.863 ms/paso** contra 5.859 teóricos (+0.06 %), es decir **4.997 RPM**. Residuo máximo de 3.2 ms. |
+| Ángulo reportado contra `quantize()` del dominio | Diferencia máxima de 0.00°. |
+| Medición completa (`SerialTurntable` real + `SimulatedAudio` cardioide + `LogSweep` + compuerta + `CsvResultStore`), de 0° a 360° cada 10° | 37 puntos en 35.5 s (0.64 s por punto, más el regreso a 0°). Error máximo de **0.017 dB** a 1 kHz contra la cardioide evaluada en el ángulo real. 37 IRs, más `measurements.csv` y `pattern.csv`. Terminó en 0.00° con las bobinas apagadas. |
+
+**Hallazgos**
+- **Uso de `--port`.** `pytest -m hardware --port /dev/…`, con espacio, daba `unrecognized arguments: --port`: en su análisis inicial de argumentos, pytest toma el puerto como ruta de tests y no carga `tests/conftest.py`. Funciona con `--port=/dev/…` o con `pytest tests …`. Se corrigió la documentación (README, este plan, la ayuda de la opción y el mensaje de *skip*). Antes se probó mover `pytest_addoption` a un `conftest.py` en la raíz: no lo arreglaba y se revirtió.
+- **Puerto ocupado.** Con el Monitor Serie del Arduino IDE abierto, el puerto queda tomado (`serial-monitor`, `Resource busy`). `SerialTurntable` lo informa como `TurntableError`, como corresponde.
+- **Duración con audio real.** La medición simulada no reproduce el barrido en tiempo real. Con audio real se sumaría ~1.05 s por punto (barrido de 1 s más la cola), así que una medición de 37 puntos tomaría ≈ 63 s más el regreso a 0°.
+
+**Fuera del alcance de esta prueba**
+- La **exactitud angular física**: la mesa reporta lo que ordena, pero cuántos grados gira realmente depende de los pasos por vuelta del 24BYJ48A. Requiere la calibración con una vuelta marcada.
+- El sentido de giro.
+- La acústica real, que necesita un adaptador de audio.
 
 ## 13. Resumen de la migración
 
@@ -631,7 +660,7 @@ Se mantuvieron a propósito:
 | 7 | Firmware v2.0.0 (NaN, texto sobrante y calidad) verificado contra la v1; test firmware ↔ emulador | 304 |
 
 **Pendiente fuera del alcance:**
-- Correr `pytest -m hardware --port …` con la placa y anotarlo en el README.
+- Correr `pytest -m hardware --port=…` con la placa y anotarlo en el README.
 - Adaptador de audio real.
 - Gráficos polares y DI (sección 11).
 

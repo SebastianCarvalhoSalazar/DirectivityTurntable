@@ -8,7 +8,7 @@ Mesa giratoria automatizada para medir el **patrón de directividad (diagramas p
 |---|---|
 | Arduino Leonardo | Controla el motor y recibe órdenes por USB/serial |
 | Puente H L298N | Driver de potencia del motor |
-| Motor paso a paso 28BYJ-48 (12 V) | Gira el plato |
+| Motor paso a paso 24BYJ48A (12 V) | Gira el plato |
 | Fuente de 12 V | Alimenta el driver y el motor |
 | Plato de acrílico con base de madera e imán de neodimio | Sostiene la fuente sonora |
 
@@ -186,18 +186,21 @@ ruff check . && ruff format --check . && mypy && pytest
 Los tests de contrato de la mesa corren siempre contra la mesa simulada y contra un emulador del firmware. Para correrlos contra la placa real, conéctala y ejecuta:
 
 ```bash
-pytest -m hardware --port /dev/tty.usbmodemXXXX
+pytest -m hardware --port=/dev/tty.usbmodemXXXX
 ```
+
+Usa `--port=` con el signo igual. Si lo separas con un espacio, pytest interpreta el puerto como la ruta de los tests y responde `unrecognized arguments: --port`. También funciona `pytest tests -m hardware --port /dev/...`.
 
 El plato gira hasta ±360° y siempre termina en 0° con las bobinas apagadas. Tarda alrededor de un minuto.
 
 | Fecha | Placa / firmware | Resultado |
 |---|---|---|
-| (pendiente) | Leonardo + `DirectivityTurntable.ino` | Aún no se corre en la placa |
+| 2026-11-08 | Leonardo + firmware 2.0.0, L298N, motor 24BYJ48A 12 V, adaptador 12 V 1.5 A | **16/16 pasan** (140 s). Vuelta completa en 12.00 s; 5.863 ms/paso (teórico 5.859); latencia serial 1.0 ms. Calibración física de pasos por vuelta pendiente |
 
 ## Próximos pasos
 
-- [ ] Probar el firmware en la placa (`pytest -m hardware`) y calibrar `STEPS_PER_REV`.
+- [x] Probar el firmware en la placa (`pytest -m hardware`): 16/16 el 2026-11-08.
+- [ ] Calibrar `STEPS_PER_REV` con una vuelta física marcada (el motor es un 24BYJ48A, no un 28BYJ-48).
 - [x] Automatizar la medición en cada ángulo: barrido senoidal, respuesta al impulso, compuerta y niveles por banda de octava (en simulación).
 - [ ] Adaptador de audio real (p. ej. `sounddevice`) para medir con la placa; el contrato de `AudioIO` ya está escrito.
 - [ ] Graficar diagramas polares y mapa de directividad, y calcular el índice de directividad (DI).

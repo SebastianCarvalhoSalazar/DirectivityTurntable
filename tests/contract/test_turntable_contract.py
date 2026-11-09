@@ -3,7 +3,7 @@
 - ``simulated``: ``SimulatedTurntable`` (siempre).
 - ``serial-emulated``: ``SerialTurntable`` sobre el emulador del firmware (siempre).
 - ``serial-hardware``: ``SerialTurntable`` sobre la placa real
-  (``pytest -m hardware --port /dev/tty.usbmodemXXXX``).
+  (``pytest -m hardware --port=/dev/tty.usbmodemXXXX``).
 """
 
 from __future__ import annotations
