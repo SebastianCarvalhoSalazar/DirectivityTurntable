@@ -25,6 +25,7 @@ DirectivityTurntable/
 │   ├── ports.py       # contratos: Turntable, AudioIO, ResultStore
 │   └── adapters/      # mesa serial y simulada, audio simulado, CSV y CLI
 ├── tests/             # unitarios, de contrato, de integración y de arquitectura
+├── Makefile           # atajos de pruebas, placa y firmware (make help)
 └── docs/MIGRATION_PLAN.md
 ```
 
@@ -76,7 +77,7 @@ La CI también compila el sketch para Leonardo en cada push.
 
 ### Pruebas del firmware sin placa
 
-`tests/firmware/` compila el mismo `.ino` en el computador, con un sustituto de `Arduino.h` que imita la aritmética del AVR. Le envía órdenes por un "serial" simulado y compara la traza completa con el emulador de Python que usan los tests del cliente: respuestas, pasos del motor y pines. Así el firmware, el emulador y el cliente no pueden separarse sin que fallen los tests. Basta con tener un compilador de C++ (`c++`); si no hay, esos tests se saltan.
+`tests/firmware/` compila el mismo `.ino` en el computador, con un sustituto de `Arduino.h` que imita la aritmética del AVR. Le envía órdenes por un "serial" simulado y compara la traza completa con el emulador de Python que usan los tests del cliente: respuestas, pasos del motor y pines. Así el firmware, el emulador y el cliente no pueden separarse sin que fallen los tests. Basta con tener un compilador de C++ (`c++`); si no hay, esos tests se saltan. Cómo correrlos y el resto de las pruebas: ver [Pruebas](#pruebas).
 
 La versión 2.0.0 del firmware corrige un giro indefinido con `GOTO NAN` y rechaza texto sobrante después del número. Fuera de eso, responde y gira exactamente igual que la versión 1: lo verificó una prueba diferencial entre ambas versiones, descrita en `docs/MIGRATION_PLAN.md`.
 
@@ -171,31 +172,171 @@ for angle, level in zip(pattern.angles(), pattern.normalized(1000.0)):
     print(f"{angle:7.2f}°  {level:6.2f} dB")
 ```
 
-## Desarrollo
+## Pruebas
+
+### Preparación
 
 ```bash
-ruff check . && ruff format --check . && mypy && pytest
+cd ~/Projects/DirectivityTurntable
+source .venv/bin/activate
 ```
 
-- `ruff` revisa el estilo y exige docstrings en estilo Google.
-- `mypy` corre en modo estricto, así que todo el código tiene type hints.
-- La CI de GitHub Actions corre lo mismo con Python 3.11, 3.12 y 3.13, y además compila el firmware.
+Con el venv activado, el prompt muestra `(.venv)` y los comandos `directivity`, `pytest`, `mypy` y `ruff` funcionan directamente. Si no lo activas, tienes dos alternativas:
+- `make`, que usa `.venv/bin` por dentro.
+- La ruta completa: `.venv/bin/directivity …`, `.venv/bin/pytest …`.
 
-### Tests con la placa
+En Claude Code cada comando con `!` abre una terminal nueva, así que la activación no se conserva. Usa `! make …` o `! .venv/bin/…`.
 
-Los tests de contrato de la mesa corren siempre contra la mesa simulada y contra un emulador del firmware. Para correrlos contra la placa real, conéctala y ejecuta:
+### Atajos con `make`
 
-```bash
-pytest -m hardware --port=/dev/tty.usbmodemXXXX
-```
+`make help` lista todos los atajos y el puerto detectado. Los de la placa encuentran el puerto solos (`/dev/tty.usbmodem*`); para usar otro, por ejemplo `make hw PORT=/dev/tty.usbmodem1101`. Antes de empezar comprueban que haya una placa conectada y que el puerto no esté ocupado.
 
-Usa `--port=` con el signo igual. Si lo separas con un espacio, pytest interpreta el puerto como la ruta de los tests y responde `unrecognized arguments: --port`. También funciona `pytest tests -m hardware --port /dev/...`.
-
-El plato gira hasta ±360° y siempre termina en 0° con las bobinas apagadas. Tarda alrededor de un minuto.
-
-| Fecha | Placa / firmware | Resultado |
+| Atajo | Qué hace | Duración |
 |---|---|---|
-| 2026-11-08 | Leonardo + firmware 2.0.0, L298N, motor 24BYJ48A 12 V, adaptador 12 V 1.5 A | **16/16 pasan** (140 s). Vuelta completa en 12.00 s; 5.863 ms/paso (teórico 5.859); latencia serial 1.0 ms. Calibración física de pasos por vuelta pendiente |
+| `make check` | Estilo, formato, tipos y todos los tests sin placa (lo mismo que la CI) | ~5 s |
+| `make test` / `make cov` | Solo los tests, sin y con reporte de cobertura | ~3 s |
+| `make format` | Corrige formato y lint automáticamente | ~1 s |
+| `make sim` | Barrido y medición con la mesa simulada | ~2 s |
+| `make ports` | Muestra el puerto de la placa y quién lo usa | — |
+| `make sweep` | Prueba corta con la placa: de 0° a 90° cada 30° | ~9 s |
+| `make selftest-quick` | Autoprueba rápida con la placa | ~20 s |
+| `make selftest` | Autoprueba completa con la placa | ~55 s |
+| `make hw` | Contrato de la mesa contra la placa | ~2.5 min |
+| `make firmware` / `make upload` | Compila el firmware, o lo compila y lo carga en la placa | ~10 s |
+
+### 1. Sin placa
+
+```bash
+make check
+```
+
+Equivale a correr estos cuatro comandos:
+
+```bash
+ruff check .            # estilo y docstrings (Google)
+ruff format --check .   # formato
+mypy                    # tipos, modo estricto
+pytest                  # todos los tests sin placa
+```
+
+Resultado esperado: `All checks passed!`, `Success: no issues found` y todos los tests en `passed`, con **16 `deselected`**. Esos 16 son los tests de hardware, que se excluyen por defecto.
+
+Para correr solo una parte:
+
+| Comando | Qué prueba |
+|---|---|
+| `pytest tests/domain` | Ángulos, señales, ventanas, procesamiento y patrón polar |
+| `pytest tests/application` | El caso de uso de medición y la autoprueba, con adaptadores simulados |
+| `pytest tests/adapters` | Cliente serial, CSV, audio simulado y la CLI |
+| `pytest tests/contract` | Contratos: la mesa simulada y el firmware emulado deben comportarse igual |
+| `pytest tests/firmware` | Compila el `.ino` en el computador y lo compara con el emulador |
+| `pytest tests/test_architecture.py` | Que ninguna capa importe lo que no debe |
+| `pytest tests/test_docs.py` | Que los comandos de esta guía sigan siendo válidos |
+
+Opciones útiles de pytest:
+
+| Opción | Para qué |
+|---|---|
+| `-v` | Muestra cada test por nombre |
+| `-x` | Se detiene en el primer fallo |
+| `-k nan` | Corre solo los tests cuyo nombre contiene "nan" |
+| `pytest tests/domain/test_angles.py::TestSweepPlan` | Corre una sola clase o un solo test |
+
+### 2. CLI en simulación
+
+```bash
+directivity sweep --simulate --step 5
+directivity measure --simulate --source cardioid --step 10 --out data/raw
+directivity selftest --simulate
+```
+
+Resultado esperado:
+- `sweep` imprime 73 líneas que terminan en `real 360.00°`.
+- `measure` muestra −6.02 dB a 90° y crea `data/raw/<fecha>/`.
+- `selftest` termina en `RESULTADO: OK (4/5 ok, 1 no aplica)`. El check que no aplica es el del tiempo por paso, porque la mesa simulada gira de forma instantánea.
+
+### 3. Con la placa
+
+Antes de empezar, revisa:
+- [ ] El Arduino está conectado por USB y el adaptador de 12 V enchufado. El LED POWER del L298N debe estar encendido.
+- [ ] **El Monitor Serie del Arduino IDE está cerrado**, porque ocupa el puerto. `make ports` muestra si algo lo está usando.
+- [ ] El plato gira libre y no hay cables que se puedan enredar.
+
+```bash
+make ports                                                   # puerto y estado
+directivity sweep --port /dev/tty.usbmodemXXXX --stop 90 --step 30
+directivity selftest --port /dev/tty.usbmodemXXXX --quick
+directivity selftest --port /dev/tty.usbmodemXXXX
+pytest -m hardware --port=/dev/tty.usbmodemXXXX -v
+```
+
+| Prueba | Atajo | Resultado esperado |
+|---|---|---|
+| Prueba corta | `make sweep` | 4 puntos (30.06°, 59.94°, 90.00°) y regreso a 0° |
+| Autoprueba | `make selftest-quick` / `make selftest` | `RESULTADO: OK (5/5 ok)` |
+| Contrato | `make hw` | `16 passed` |
+
+**En el contrato, `--port=` va con el signo igual.** Si escribes el puerto separado por un espacio, pytest lo toma como la carpeta de los tests y responde `unrecognized arguments: --port`. También funciona indicando la carpeta: `pytest tests -m hardware --port /dev/…`. En `directivity` sirven las dos formas.
+
+**Qué revisa la autoprueba (`selftest`):**
+
+| Check | Qué mide | Umbral |
+|---|---|---|
+| Latencia serial (p95) | Tiempo de ida y vuelta de `POS`, sin mover el motor | < 20 ms |
+| Tiempo por paso | Ajuste lineal de la duración de 8 giros contra sus pasos; esperado 60 / (2048 × 5 RPM) | ±2 % |
+| Ángulo reportado contra el modelo | Lo que responde la mesa frente a la cuantización del cliente de Python | ≤ 0.011° |
+| Medición completa | Medición de 0° a 360° cada 10° (0° a 180° cada 45° en la versión rápida) con audio simulado cardioide; error a 1 kHz | < 0.5 dB |
+| Regreso a 0° y RELEASE | Posición al terminar | 0.00° |
+
+Cada ejecución guarda en `data/selftest/<fecha>/` el reporte `selftest.json` (métricas, umbrales y versión) junto con la medición (`measurements.csv`, `pattern.csv` y las IRs). Termina con código 0 si ningún check falla y con 1 si alguno falla. La autoprueba valida la mesa y el software, no la acústica: el audio es simulado y no comprueba la calibración física de los pasos por vuelta.
+
+### 4. Firmware
+
+```bash
+make firmware      # compila para Leonardo (debe decir "Sketch uses 9130 bytes")
+make upload        # compila y carga en la placa (con el Monitor Serie cerrado)
+```
+
+Si cambias el firmware, actualiza también `tests/support/firmware_emulator.py`; si no, `pytest tests/firmware` falla ([ver arriba](#pruebas-del-firmware-sin-placa)).
+
+Para probarlo a mano, abre el Monitor Serie del Arduino IDE con *New Line* y 115200 baud:
+
+| Escribes | Responde |
+|---|---|
+| `PING` | `OK PONG` |
+| `HOME` | `OK 0.00` |
+| `GOTO 10` | `OK 10.02` (gira ~10°) |
+| `GOTO NAN` | `ERR angulo invalido` (no se mueve) |
+| `GOTO 0` y luego `RELEASE` | `OK 0.00` y `OK RELEASED` |
+
+Al terminar, **cierra el Monitor Serie**, para que Python pueda usar el puerto.
+
+### 5. CI
+
+Se ejecuta sola en cada `git push` (`make check` con Python 3.11, 3.12 y 3.13, más la compilación del firmware). Para revisarla desde la terminal:
+
+```bash
+gh run list --limit 3       # últimas ejecuciones
+gh run view --log-failed    # detalle si alguna falló
+```
+
+### Orden recomendado
+
+| Si cambiaste… | Corre |
+|---|---|
+| Código Python | `make check` |
+| El firmware | `pytest tests/firmware`, luego `make upload`, luego `make selftest-quick` y `make hw` |
+| Nada, pero vas a medir | `make ports` y luego `make selftest-quick` |
+
+### Registro de pruebas con la placa
+
+| Fecha | Montaje | Prueba | Resultado |
+|---|---|---|---|
+| 2026-11-08 | Leonardo con firmware 2.0.0, L298N, motor 24BYJ48A de 12 V y adaptador de 12 V 1.5 A | Contrato (`make hw`) | **16/16 pasan** (140 s). Vuelta completa en 12.00 s |
+| 2026-11-08 | Igual | `directivity sweep` hasta 90° con pasos de 30°, 10°, 5° y 1° | Ángulos idénticos a la simulación; diferencia ≤ 0.086° con lo pedido; regreso a 0° |
+| 2026-11-08 | Igual | `selftest` rápido y completo | **5/5 ok** (20.3 s y 54.3 s). Latencia p95 de 1.03 ms; 5.863 ms por paso (+0.07 %); error del patrón de 0.017 dB |
+
+Sigue pendiente la calibración física de los pasos por vuelta.
 
 ## Próximos pasos
 

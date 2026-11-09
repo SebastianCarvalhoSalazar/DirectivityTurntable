@@ -275,6 +275,19 @@ Cada fase deja `main` en verde: ruff, mypy y pytest pasan en CI. Además se pued
 - **Riesgos:**
   - El entorno de la Mac no es el AVR. Se mitiga imitando `float32` en los literales, `Print::printFloat` y la gramática de `strtod` de avr-libc. La prueba en la placa sigue pendiente.
 
+### Fase 8 (agregada): Guía de pruebas, `directivity selftest` y `Makefile`
+
+**Objetivo:**
+- Que cualquier prueba se pueda correr a mano sin tropiezos (venv, `--port=`, puerto ocupado).
+- Convertir la prueba de punta a punta con la placa en un subcomando instalable y evaluado contra umbrales.
+
+- **Archivos:** `src/directivity/application/self_test.py`, `src/directivity/adapters/cli.py` (`selftest`), `Makefile`, `README.md` (sección **Pruebas**), `tests/application/test_self_test.py`, `tests/test_docs.py` y `.gitignore` (`data/selftest/`).
+- **Criterios de aceptación:**
+  - `selftest --simulate` da 4 en ok y 1 que no aplica, con rc 0.
+  - Con la placa, `selftest` da 5/5 en ok y métricas coherentes con la prueba anterior.
+  - Los atajos de `make` funcionan, incluidos los avisos de puerto vacío y de puerto ocupado.
+  - Los comandos del README se validan en CI.
+
 ## 7. Estrategia de tests
 
 | Nivel | Qué | Dónde corre |
@@ -646,6 +659,57 @@ Se mantuvieron a propósito:
 - El sentido de giro.
 - La acústica real, que necesita un adaptador de audio.
 
+### Fase 8 (agregada): Guía de pruebas, `directivity selftest` y `Makefile` (2026-11-08)
+
+**Paso 8.1: `directivity selftest`** (commit `9acf9fd`)
+- `SelfTest`, en la capa de aplicación, mide:
+  - la latencia (p95 de 100 consultas `POS`);
+  - el tiempo por paso (ajuste lineal de 8 giros);
+  - el ángulo reportado frente a `quantize()`.
+
+  Después hace una medición completa **reutilizando `MeasureDirectivity`** y compara cada check con los umbrales de `Thresholds`. Recibe el reloj inyectado, así que se prueba con un reloj falso.
+- El subcomando de la CLI es `selftest (--port | --simulate) [--quick] [--rpm]`. Imprime una tabla con ✅, ❌ y ⏭, guarda `data/selftest/<fecha>/selftest.json` (métricas, umbrales y metadatos) y devuelve rc 0 o 1.
+- **Validación:**
+  - 12 tests de `SelfTest`: reloj falso, firmware emulado y fallas de referencia, latencia, velocidad y audio.
+  - 3 tests de la CLI.
+  - Cobertura de `self_test.py` al 100 %.
+- **Con la placa:**
+  - Versión rápida: 5/5 en ok en 20.3 s (latencia de 1.06 ms, 5.867 ms/paso, 0.007 dB).
+  - Versión completa: 5/5 en ok en 54.3 s (latencia de 1.03 ms, 5.863 ms/paso con +0.07 %, 0.017 dB).
+
+**Paso 8.2: `Makefile`** (commit `4d951c1`)
+- Targets: `help`, `check`, `lint`, `typecheck`, `test`, `cov`, `format`, `sim`, `ports`, `sweep`, `selftest`, `selftest-quick`, `hw`, `firmware` y `upload`.
+- Usa `$(VENV)/bin`, autodetecta `PORT` y escribe siempre `--port=` en el contrato.
+- Antes de cada target de hardware, `_port` comprueba que el puerto no esté vacío ni ocupado.
+- **Validación:** `make check` (318 tests), `make sim`, `make firmware` (9130 bytes), `make sweep`, `make selftest-quick` (5/5) y `make hw` (16/16 en 140 s) funcionan. `make hw PORT=` (sin placa) responde con un mensaje claro. Con el puerto tomado por otro proceso, `make ports` muestra quién lo usa y `make sweep` se detiene antes de abrirlo.
+- **Hallazgo:** la primera versión del aviso de puerto ocupado **no detectaba** el caso real. `lsof tty cu` devuelve código 1 si alguno de los dos archivos no está abierto, y el Monitor Serie abre solo `/dev/cu…`. Se corrigió para mirar la salida de `lsof`, y se verificó abriendo el puerto desde otro proceso.
+
+**Paso 8.3: guía de pruebas en el README**
+- La sección `## Desarrollo` se reemplazó por `## Pruebas`, con estas partes:
+  - preparación (venv, `make` o `.venv/bin`, y la nota sobre `!` en Claude Code);
+  - tabla de atajos;
+  - sin placa (por carpeta y opciones de pytest);
+  - CLI simulada;
+  - con la placa (lista de verificación, comandos, el porqué de `--port=` y qué mide `selftest`);
+  - firmware (compilar, cargar y el Monitor Serie);
+  - CI y orden recomendado;
+  - registro de pruebas con la placa, con dos filas nuevas.
+- Se agregó `Makefile` a la sección de estructura y la subsección del firmware enlaza a la guía.
+- **`tests/test_docs.py`**, 38 casos que corren en CI:
+  - ejecuta los comandos `--simulate` del README;
+  - valida **todos** los comandos `directivity …`, incluidos los de la placa, contra el parser de la CLI;
+  - comprueba que existan las rutas `tests/…` y los atajos `make …` mencionados;
+  - prueba de regresión del `--port=` en el README y el `Makefile`.
+- **Prueba de mutación:** con `--port` y espacio en el contrato, y con la opción `--quik`, fallan exactamente esos 2 casos. Revertidos, todo vuelve a verde.
+- **Validación:** `make check` pasa con **356 tests** y 16 de hardware excluidos. `ruff` y `mypy --strict` pasan sin errores.
+
+**Desviaciones y decisiones**
+- **`--quick` mide de 0° a 180° cada 45°**, no la vuelta completa. El plan decía ~20 s, y medir 360° obliga a un regreso de 12 s.
+- **El check de tiempo por paso no muestra valor** ("—") cuando no aplica, en simulación. La pendiente queda solo en las métricas del JSON.
+- **La tolerancia del ángulo es de 0.011°**, no exacta, por los empates de `Serial.print(float, 2)` documentados en la Fase 7.
+- **`FIRMWARE_RPM = 5` se repite en la CLI**, igual que `STEPS_PER_REV` en el dominio. Que la mesa informe su configuración con una orden del firmware sigue en los próximos pasos.
+- **El mensaje de puerto ocupado de `SerialTurntable` no se cambió**, porque `make` ya lo detecta antes. Queda como mejora aparte.
+
 ## 13. Resumen de la migración
 
 | Fase | Resultado | Tests (acumulados) |
@@ -658,6 +722,7 @@ Se mantuvieron a propósito:
 | 5 | `MeasureDirectivity` y `directivity measure` | 269 |
 | 6 | Retiro del cliente heredado y README | 269 |
 | 7 | Firmware v2.0.0 (NaN, texto sobrante y calidad) verificado contra la v1; test firmware ↔ emulador | 304 |
+| 8 | Guía de pruebas en el README, `directivity selftest` (5/5 con la placa), `Makefile` y validación de la documentación | 356 |
 
 **Pendiente fuera del alcance:**
 - Correr `pytest -m hardware --port=…` con la placa y anotarlo en el README.
